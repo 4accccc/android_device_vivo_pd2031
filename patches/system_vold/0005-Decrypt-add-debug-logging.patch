@@ -1,0 +1,24 @@
+diff --git a/Decrypt.cpp b/Decrypt.cpp
+index d9f034b..a5155de 100755
+--- a/Decrypt.cpp
++++ b/Decrypt.cpp
+@@ -183,8 +183,11 @@ extern "C" bool lookup_ref_tar(fscrypt_policy *fep, uint8_t* policy) {
+ }
+ 
+ extern "C" bool Decrypt_DE() {
++	printf("[DEBUG] Decrypt_DE: ENTER\n");
+ 	printf("Attempting to initialize DE keys\n");
++	printf("[DEBUG] Decrypt_DE: calling fscrypt_initialize_systemwide_keys\n");
+ 	if (!fscrypt_initialize_systemwide_keys()) { // this deals with the overarching device encryption
++		printf("[DEBUG] Decrypt_DE: fscrypt_initialize_systemwide_keys FAILED\n");
+ 		printf("fscrypt_initialize_systemwide_keys returned fail\n");
+ 		return false;
+ 	}
+@@ -882,6 +885,7 @@ extern "C" int Get_Password_Type(const userid_t user_id, std::string& filename)
+ }
+ 
+ extern "C" bool Decrypt_User(const userid_t user_id, const std::string& Password) {
++	printf("[DEBUG] Decrypt_User: ENTER user_id=%d\n", user_id);
+ 	printf("Attempting to decrypt user\n");
+     uint8_t *auth_token;
+     uint32_t auth_token_len;

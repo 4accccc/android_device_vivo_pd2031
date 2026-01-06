@@ -1,0 +1,116 @@
+on init
+    #create mountpoint for /mnt/vendor/persist partition
+    mkdir /mnt/vendor/persist 0771 system system
+
+    symlink /mnt/vendor/persist /vendor/persist
+    symlink /vendor/lib64/hw/libMcGatekeeper.so   /vendor/lib64/hw/gatekeeper.${ro.product.board}.so
+
+on post-fs
+    chown system system /mnt/vendor/persist
+    chmod 0771 /mnt/vendor/persist
+
+    # We restorecon /mnt/vendor/persist to set SEPolicy label.
+    restorecon /mnt/vendor/persist
+
+    # Create mcRegistry to store failure record
+    mkdir /mnt/vendor/persist/mcRegistry 0771 system system
+
+    write /proc/bootprof "MOBICORE: Starting mcDriverDaemon"
+    start mobicore
+
+on post-fs-data
+    # Create /data/vendor/key_provisioning dir and get proper encryption policy installed
+    # Key Installation
+    mkdir /data/vendor/key_provisioning 0771 system system
+
+# just boot in fastboot mode, fastbootd service need vendor.boot-hal-1-0 & health-hal-2-0
+on property:recovery.fastboot_mode=1
+    start vendor.boot-hal-1-0
+    start health-hal-2-0
+
+on property:recovery.service=1
+    start vendor.keymaster-4-0-trustonic
+    start gatekeeper-1-0
+    #wait_for_prop hwservicemanager.ready true
+    exec_start wait_for_keymaster
+    start guardianangle
+
+service wait_for_keymaster  /system/bin/wait_for_keymaster
+    disabled
+    user root
+    seclabel u:r:recovery:s0
+
+service keymaster-3-0 /vendor/bin/android.hardware.keymaster@3.0-service
+    disabled
+    user root
+    group root drmrpc
+    seclabel u:r:recovery:s0
+
+service keymaster-4-0 /vendor/bin/android.hardware.keymaster@4.0-service
+    disabled
+    user root
+    group root drmrpc
+    seclabel u:r:recovery:s0
+
+service vendor.keymaster-4-0-trustonic /vendor/bin/hw/android.hardware.keymaster@4.0-service.trustonic
+    disabled
+    user root
+    group root drmrpc
+    seclabel u:r:recovery:s0
+
+service gatekeeper-1-0 /vendor/bin/android.hardware.gatekeeper@1.0-service
+    disabled
+    user root
+    group root
+    seclabel u:r:recovery:s0
+
+service keystore_auth /system/bin/keystore_auth
+    disabled
+    user system
+    group root system
+    seclabel u:r:recovery:s0
+
+service keystore /system/bin/keystore /data/misc/keystore
+    disabled
+    user keystore
+    group keystore drmrpc readproc log
+    writepid /dev/cpuset/foreground/tasks
+    seclabel u:r:recovery:s0
+
+service guardianangle  /system/bin/guardianangle
+    disabled
+    user root
+    seclabel u:r:recovery:s0
+
+service vendor.boot-hal-1-0 /vendor/bin/hw/android.hardware.boot@1.0-service
+    disabled
+    user root
+    group root
+    seclabel u:r:recovery:s0
+
+service health-hal-2-0 /vendor/bin/hw/android.hardware.health@2.0-service
+    disabled
+    user root
+    group root
+    seclabel u:r:recovery:s0
+
+# Start Daemon (Registry directories should already be present)service mobicore /vendor/bin/mcDriverDaemon --P1 /mnt/vendor/persist/mcRegistry 	-r /vendor/app/mcRegistry/020f0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/030b0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/030c0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/030f0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/05070000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/05120000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/06090000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/07150000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/07170000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/08050000000000000000000000003419.drbin 	-r /vendor/app/mcRegistry/09180000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/62d690ff530e46cfb472ec52c4da3773.drbin    disabled    user root    group root    seclabel u:r:recovery:s0
+
+# t-Drv naming
+# 020f0000000000000000000000000000.drbin : utils
+# 05120000000000000000000000000000.drbin : sec
+# 070b0000000000000000000000000000.drbin : play
+# 020b0000000000000000000000000000.drbin : cmdq
+# 05070000000000000000000000000000.drbin : goodix_fp
+# 030b0000000000000000000000000000.drbin : spi
+# 030c0000000000000000000000000000.drbin : spi5
+# 07070000000000000000000000000000.drbin : MtkH264Venc
+# 07060000000000000000000000007169.drbin : MtkH264Vdec
+# 5020170115e016302017012521300000.drbin : drm_hdcp_common
+# 40188311faf343488db888ad39496f9a.drbin : widevine
+# 070c0000000000000000000000000000.drbin : IRIS_GPIO
+# 090b0000000000000000000000000000.drbin : IRIS_I2C
+# 0f5eed3c3b5a47afacca69a84bf0efad.drbin : isp
+# 07407000000000000000000000000000.drbin : sensor
+# 06090000000000000000000000000000.drbin : drm keyinstall
+# 9073f03a9618383bb1856eb3f990babd.drbin : m4u

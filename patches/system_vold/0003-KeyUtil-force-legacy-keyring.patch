@@ -1,0 +1,120 @@
+diff --git a/KeyUtil.cpp b/KeyUtil.cpp
+index 9273564..924a1fc 100644
+--- a/KeyUtil.cpp
++++ b/KeyUtil.cpp
+@@ -119,7 +119,9 @@ static std::string generateKeyRef(const uint8_t* key, int length) {
+ }
+ 
+ static bool fillKey(const KeyBuffer& key, fscrypt_key* fs_key) {
++    printf("[DEBUG] fillKey: key.size=%zu FSCRYPT_MAX_KEY_SIZE=%d\n", key.size(), FSCRYPT_MAX_KEY_SIZE);
+     if (key.size() != FSCRYPT_MAX_KEY_SIZE) {
++        printf("[DEBUG] fillKey: WRONG SIZE!\n");
+         LOG(ERROR) << "Wrong size key " << key.size();
+         return false;
+     }
+@@ -147,34 +149,57 @@ static std::string buildLegacyKeyName(const std::string& prefix, const std::stri
+ // Get the ID of the keyring we store all fscrypt keys in when the kernel is too
+ // old to support FS_IOC_ADD_ENCRYPTION_KEY and FS_IOC_REMOVE_ENCRYPTION_KEY.
+ static bool fscryptKeyring(key_serial_t* device_keyring) {
++    printf("[DEBUG] fscryptKeyring: searching for 'fscrypt' keyring\n");
+     *device_keyring = keyctl_search(KEY_SPEC_SESSION_KEYRING, "keyring", "fscrypt", 0);
+     if (*device_keyring == -1) {
+-        PLOG(ERROR) << "Unable to find device keyring";
+-        return false;
++        printf("[DEBUG] fscryptKeyring: keyring not found errno=%d, creating new one\n", errno);
++        // Try to create the fscrypt keyring if it doesn't exist
++        *device_keyring = add_key("keyring", "fscrypt", NULL, 0, KEY_SPEC_SESSION_KEYRING);
++        if (*device_keyring == -1) {
++            printf("[DEBUG] fscryptKeyring: create keyring FAILED errno=%d\n", errno);
++            PLOG(ERROR) << "Unable to find or create fscrypt keyring";
++            return false;
++        }
++        printf("[DEBUG] fscryptKeyring: created new keyring id=%d\n", *device_keyring);
++    } else {
++        printf("[DEBUG] fscryptKeyring: found existing keyring id=%d\n", *device_keyring);
+     }
+     return true;
+ }
+ 
+ // Add an encryption key of type "logon" to the global session keyring.
+ static bool installKeyLegacy(const KeyBuffer& key, const std::string& raw_ref) {
++    printf("[DEBUG] installKeyLegacy: ENTER key_size=%zu\n", key.size());
+     // Place fscrypt_key into automatically zeroing buffer.
+     KeyBuffer fsKeyBuffer(sizeof(fscrypt_key));
+     fscrypt_key& fs_key = *reinterpret_cast<fscrypt_key*>(fsKeyBuffer.data());
+ 
+-    if (!fillKey(key, &fs_key)) return false;
++    if (!fillKey(key, &fs_key)) {
++        printf("[DEBUG] installKeyLegacy: fillKey FAILED\n");
++        return false;
++    }
++    printf("[DEBUG] installKeyLegacy: fillKey OK\n");
+     key_serial_t device_keyring;
+-    if (!fscryptKeyring(&device_keyring)) return false;
++    if (!fscryptKeyring(&device_keyring)) {
++        printf("[DEBUG] installKeyLegacy: fscryptKeyring FAILED\n");
++        return false;
++    }
++    printf("[DEBUG] installKeyLegacy: device_keyring=%d\n", device_keyring);
+     for (char const* const* name_prefix = NAME_PREFIXES; *name_prefix != nullptr; name_prefix++) {
+         auto ref = buildLegacyKeyName(*name_prefix, raw_ref);
++        printf("[DEBUG] installKeyLegacy: adding key ref=%s\n", ref.c_str());
+         key_serial_t key_id =
+             add_key("logon", ref.c_str(), (void*)&fs_key, sizeof(fs_key), device_keyring);
+         if (key_id == -1) {
++            printf("[DEBUG] installKeyLegacy: add_key FAILED errno=%d\n", errno);
+             PLOG(ERROR) << "Failed to insert key into keyring " << device_keyring;
+             return false;
+         }
++        printf("[DEBUG] installKeyLegacy: add_key OK key_id=%d\n", key_id);
+         LOG(INFO) << "Added key " << key_id << " (" << ref << ") to keyring " << device_keyring
+                    << " in process " << getpid();
+     }
++    printf("[DEBUG] installKeyLegacy: SUCCESS\n");
+     return true;
+ }
+ 
+@@ -243,15 +268,18 @@ static bool buildKeySpecifier(fscrypt_key_specifier* spec, const EncryptionPolic
+ // https://www.kernel.org/doc/html/latest/filesystems/fscrypt.html#fs-ioc-add-encryption-key
+ static bool installFsKeyringKey(const std::string& mountpoint, const EncryptionOptions& options,
+                                 fscrypt_add_key_arg* arg) {
++    printf("[DEBUG] installFsKeyringKey: mp=%s hw=%d\n", mountpoint.c_str(), options.use_hw_wrapped_key);
+     if (options.use_hw_wrapped_key) arg->__flags |= __FSCRYPT_ADD_KEY_FLAG_HW_WRAPPED;
+ 
+     android::base::unique_fd fd(open(mountpoint.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+     if (fd == -1) {
++        printf("[DEBUG] installFsKeyringKey: open FAILED errno=%d\n", errno);
+         PLOG(ERROR) << "Failed to open " << mountpoint << " to install key";
+         return false;
+     }
+ 
+     if (ioctl(fd, FS_IOC_ADD_ENCRYPTION_KEY, arg) != 0) {
++        printf("[DEBUG] installFsKeyringKey: ioctl FAILED errno=%d\n", errno);
+         PLOG(ERROR) << "Failed to install fscrypt key to " << mountpoint;
+         return false;
+     }
+@@ -261,6 +289,7 @@ static bool installFsKeyringKey(const std::string& mountpoint, const EncryptionO
+ 
+ bool installKey(const std::string& mountpoint, const EncryptionOptions& options,
+                 const KeyBuffer& key, EncryptionPolicy* policy) {
++    printf("[DEBUG] installKey: ENTER mp=%s version=%d\n", mountpoint.c_str(), options.version);
+     policy->options = options;
+     // Put the fscrypt_add_key_arg in an automatically-zeroing buffer, since we
+     // have to copy the raw key into it.
+@@ -281,12 +310,10 @@ bool installKey(const std::string& mountpoint, const EncryptionOptions& options,
+             } else {
+                 policy->key_raw_ref = generateKeyRef((const uint8_t*)key.data(), key.size());
+             }
+-            if (!isFsKeyringSupported()) {
+-                return installKeyLegacy(key, policy->key_raw_ref);
+-            }
+-            if (!buildKeySpecifier(&arg->key_spec, *policy)) {
+-                return false;
+-            }
++            // TWRP FIX: Always use legacy keyring for v1 policies in recovery mode
++            // The fs keyring ioctl detection fails when /data state is uncertain
++            printf("[DEBUG] installKey: v1 policy, forcing installKeyLegacy\n");
++            return installKeyLegacy(key, policy->key_raw_ref);
+             break;
+         case 2:
+             // A key for a v2 policy is specified by an 16-byte "identifier",

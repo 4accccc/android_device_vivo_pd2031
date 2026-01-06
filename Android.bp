@@ -1,0 +1,17 @@
+//
+// Copyright (C) 2026 The Android Open Source Project
+// SPDX-License-Identifier: Apache-2.0
+//
+
+soong_namespace {
+}
+
+cc_prebuilt_binary {
+    name: "vts_app_recovery",
+    srcs: ["recovery/root/system/bin/vts_app_recovery"],
+    recovery: true,
+    check_elf_files: false,
+    strip: {
+        none: true,
+    },
+}

@@ -1,0 +1,45 @@
+# Mobicore/Trustonic TEE types for TWRP decryption
+# These type definitions are required for keymaster to access RPMB
+
+# Device types
+type mobicore_admin_device, dev_type;
+type mobicore_user_device, dev_type;
+type mobicore_tui_device, dev_type;
+type teei_client_device, dev_type;
+type teei_rpmb_device, dev_type;
+type teei_config_device, dev_type;
+type teei_fp_device, dev_type;
+type teei_vfs_device, dev_type;
+type rpmb_block_device, dev_type;
+type tkcore_block_device, dev_type;
+type ut_keymaster_device, dev_type;
+
+# File types
+type mobicore_data_file, file_type, data_file_type;
+type mobicore_vendor_file, file_type, vendor_file_type;
+type teei_data_file, file_type, data_file_type;
+type persist_data_file, file_type, data_file_type;
+
+# Recovery is permissive, so just allow read access
+# The permissive mode will handle write access without neverallow violations
+recovery_only(`
+  allow recovery mobicore_admin_device:chr_file rw_file_perms;
+  allow recovery mobicore_user_device:chr_file rw_file_perms;
+  allow recovery mobicore_tui_device:chr_file rw_file_perms;
+  allow recovery teei_client_device:chr_file rw_file_perms;
+  allow recovery teei_rpmb_device:chr_file rw_file_perms;
+  allow recovery teei_config_device:chr_file rw_file_perms;
+  allow recovery teei_fp_device:chr_file rw_file_perms;
+  allow recovery teei_vfs_device:chr_file rw_file_perms;
+  allow recovery rpmb_block_device:blk_file rw_file_perms;
+  allow recovery tkcore_block_device:blk_file rw_file_perms;
+  allow recovery ut_keymaster_device:chr_file rw_file_perms;
+  allow recovery mobicore_data_file:dir r_dir_perms;
+  allow recovery mobicore_data_file:file r_file_perms;
+  allow recovery mobicore_vendor_file:dir r_dir_perms;
+  allow recovery mobicore_vendor_file:file r_file_perms;
+  allow recovery teei_data_file:dir r_dir_perms;
+  allow recovery teei_data_file:file r_file_perms;
+  allow recovery persist_data_file:dir r_dir_perms;
+  allow recovery persist_data_file:file r_file_perms;
+')

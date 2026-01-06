@@ -1,0 +1,977 @@
+diff --git a/Keymaster.cpp b/Keymaster.cpp
+index 4781d91..9813e56 100644
+--- a/Keymaster.cpp
++++ b/Keymaster.cpp
+@@ -14,232 +14,589 @@
+  * limitations under the License.
+  */
+ 
++// Hybrid Keymaster implementation for TWRP
++// Uses raw HIDL Keymaster V4.0 interface directly (no wrapper with CHECK macros)
++// Modified for Vivo Y73S (PD2031)
++
+ #include "Keymaster.h"
+ 
+ #include <android-base/logging.h>
++#include <android/hardware/keymaster/4.0/IKeymasterDevice.h>
++#include <keymasterV4_1/authorization_set.h>
++#include <keymasterV4_1/keymaster_utils.h>
+ 
+-#include <aidl/android/hardware/security/keymint/SecurityLevel.h>
+-#include <aidl/android/security/maintenance/IKeystoreMaintenance.h>
+-#include <aidl/android/system/keystore2/Domain.h>
+-#include <aidl/android/system/keystore2/EphemeralStorageKeyResponse.h>
+-#include <aidl/android/system/keystore2/KeyDescriptor.h>
++namespace android {
++namespace vold {
+ 
+-// Keep these in sync with system/security/keystore2/src/keystore2_main.rs
+-static constexpr const char keystore2_service_name[] =
+-        "android.system.keystore2.IKeystoreService/default";
+-static constexpr const char maintenance_service_name[] = "android.security.maintenance";
++using ::android::hardware::hidl_string;
++using ::android::hardware::hidl_vec;
++using ::android::hardware::Return;
++using IKeymasterDevice40 = ::android::hardware::keymaster::V4_0::IKeymasterDevice;
+ 
+-/*
+- * Keep this in sync with the description for update() in
+- * system/hardware/interfaces/keystore2/aidl/android/system/keystore2/IKeystoreOperation.aidl
+- */
+-static constexpr const size_t UPDATE_INPUT_MAX_SIZE = 32 * 1024;  // 32 KiB
++// Static member initialization
++/* static */ bool Keymaster::hmacKeyGenerated = false;
+ 
+-// Keep this in sync with system/sepolicy/private/keystore2_key_contexts
+-static constexpr const int VOLD_NAMESPACE = 100;
++// ============================================================================
++// Type Conversion Functions
++// ============================================================================
+ 
+-namespace android {
+-namespace vold {
++/* static */ km_hidl::ErrorCode Keymaster::convertErrorToHidl(km::ErrorCode error) {
++    return static_cast<km_hidl::ErrorCode>(static_cast<int32_t>(error));
++}
+ 
+-namespace ks2_maint = ::aidl::android::security::maintenance;
++/* static */ km::ErrorCode Keymaster::convertErrorFromHidl(km_hidl::ErrorCode error) {
++    return static_cast<km::ErrorCode>(static_cast<int32_t>(error));
++}
+ 
+-KeymasterOperation::~KeymasterOperation() {
+-    if (ks2Operation) ks2Operation->abort();
++/* static */ km_hidl::AuthorizationSet Keymaster::convertToHidl(
++        const km::AuthorizationSet& keymintParams) {
++    km_hidl::AuthorizationSet hidlParams;
++    LOG(DEBUG) << "[Keymaster] convertToHidl: Converting " << keymintParams.size() << " parameters";
++
++    for (const auto& param : keymintParams) {
++        km_hidl::KeyParameter hidlParam;
++        hidlParam.tag = static_cast<km_hidl::Tag>(static_cast<int32_t>(param.tag));
++
++        // Get the tag type from the high bits (bits 28-31)
++        auto tagType = static_cast<uint32_t>(param.tag) & (0xF << 28);
++        LOG(DEBUG) << "[Keymaster] convertToHidl: tag=" << static_cast<int32_t>(param.tag)
++                   << " tagType=0x" << std::hex << tagType;
++
++        switch (tagType) {
++            case static_cast<uint32_t>(km_hidl::TagType::ENUM):
++            case static_cast<uint32_t>(km_hidl::TagType::ENUM_REP):
++                // Handle enum types - keymint uses specific enum types, but we need integer
++                switch (param.tag) {
++                    case km::Tag::PURPOSE:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::keyPurpose>());
++                        break;
++                    case km::Tag::ALGORITHM:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::algorithm>());
++                        break;
++                    case km::Tag::BLOCK_MODE:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::blockMode>());
++                        break;
++                    case km::Tag::DIGEST:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::digest>());
++                        break;
++                    case km::Tag::PADDING:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::paddingMode>());
++                        break;
++                    case km::Tag::EC_CURVE:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::ecCurve>());
++                        break;
++                    case km::Tag::ORIGIN:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::origin>());
++                        break;
++                    case km::Tag::USER_AUTH_TYPE:
++                        hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::hardwareAuthenticatorType>());
++                        break;
++                    default:
++                        // Skip unknown enum tags - can't safely access without knowing type
++                        LOG(WARNING) << "[Keymaster] convertToHidl: Unknown enum tag " << static_cast<int32_t>(param.tag);
++                        continue;
++                }
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::UINT):
++            case static_cast<uint32_t>(km_hidl::TagType::UINT_REP):
++                hidlParam.f.integer = static_cast<uint32_t>(param.value.get<km::KeyParameterValue::integer>());
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::ULONG):
++            case static_cast<uint32_t>(km_hidl::TagType::ULONG_REP):
++                hidlParam.f.longInteger = static_cast<uint64_t>(param.value.get<km::KeyParameterValue::longInteger>());
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::DATE):
++                hidlParam.f.dateTime = static_cast<uint64_t>(param.value.get<km::KeyParameterValue::dateTime>());
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::BOOL):
++                // Bool tags don't need value extraction - presence means true
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::BYTES): {
++                const auto& blob = param.value.get<km::KeyParameterValue::blob>();
++                hidlParam.blob.setToExternal(const_cast<uint8_t*>(blob.data()), blob.size());
++                break;
++            }
++            default:
++                LOG(WARNING) << "[Keymaster] convertToHidl: Unknown tag type 0x" << std::hex << tagType
++                             << " for tag " << std::dec << static_cast<int32_t>(param.tag);
++                continue;
++        }
++        hidlParams.push_back(hidlParam);
++    }
++    return hidlParams;
++}
++
++/* static */ km::AuthorizationSet Keymaster::convertFromHidl(
++        const km_hidl::AuthorizationSet& hidlParams) {
++    km::AuthorizationSet keymintParams;
++    for (const auto& param : hidlParams) {
++        km::KeyParameter keymintParam;
++        keymintParam.tag = static_cast<km::Tag>(static_cast<int32_t>(param.tag));
++        auto tagType = static_cast<uint32_t>(param.tag) & (0xF << 28);
++        switch (tagType) {
++            case static_cast<uint32_t>(km_hidl::TagType::ENUM):
++            case static_cast<uint32_t>(km_hidl::TagType::ENUM_REP):
++            case static_cast<uint32_t>(km_hidl::TagType::UINT):
++            case static_cast<uint32_t>(km_hidl::TagType::UINT_REP):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::integer>(
++                    static_cast<int32_t>(param.f.integer));
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::ULONG):
++            case static_cast<uint32_t>(km_hidl::TagType::ULONG_REP):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::longInteger>(
++                    static_cast<int64_t>(param.f.longInteger));
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::DATE):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::dateTime>(
++                    static_cast<int64_t>(param.f.dateTime));
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::BOOL):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::boolValue>(true);
++                break;
++            case static_cast<uint32_t>(km_hidl::TagType::BYTES):
++                keymintParam.value = km::KeyParameterValue::make<km::KeyParameterValue::blob>(
++                    std::vector<uint8_t>(param.blob.begin(), param.blob.end()));
++                break;
++            default:
++                continue;
++        }
++        keymintParams.push_back(keymintParam);
++    }
++    return keymintParams;
+ }
+ 
+-static void zeroize_vector(std::vector<uint8_t>& vec) {
+-    memset_s(vec.data(), 0, vec.size());
++/* static */ std::optional<km_hidl::KeyPurpose> Keymaster::extractPurpose(
++        const km::AuthorizationSet& params) {
++    for (const auto& param : params) {
++        if (param.tag == km::Tag::PURPOSE) {
++            return static_cast<km_hidl::KeyPurpose>(param.value.get<km::KeyParameterValue::keyPurpose>());
++        }
++    }
++    return std::nullopt;
+ }
+ 
+-static bool logKeystore2ExceptionIfPresent(::ndk::ScopedAStatus& rc, const std::string& func_name) {
+-    if (rc.isOk()) return false;
++// ============================================================================
++// KeymasterOperation Implementation - Uses raw IKeymasterDevice40
++// ============================================================================
+ 
+-    auto exception_code = rc.getExceptionCode();
+-    if (exception_code == EX_SERVICE_SPECIFIC) {
+-        LOG(ERROR) << "keystore2 Keystore " << func_name
+-                   << " returned service specific error: " << rc.getServiceSpecificError();
+-    } else {
+-        LOG(ERROR) << "keystore2 Communication with Keystore " << func_name
+-                   << " failed error: " << exception_code;
++KeymasterOperation::~KeymasterOperation() {
++    if (mDevice) {
++        LOG(DEBUG) << "[Keymaster] ~KeymasterOperation: Aborting operation";
++        mDevice->abort(mOpHandle);
+     }
+-    return true;
+ }
+ 
+ bool KeymasterOperation::updateCompletely(const char* input, size_t inputLen,
+                                           const std::function<void(const char*, size_t)> consumer) {
+-    if (!ks2Operation) return false;
+-
+-    while (inputLen != 0) {
+-        size_t currLen = std::min(inputLen, UPDATE_INPUT_MAX_SIZE);
+-        std::vector<uint8_t> input_vec(input, input + currLen);
+-        inputLen -= currLen;
+-        input += currLen;
+-
+-        std::optional<std::vector<uint8_t>> output;
+-        auto rc = ks2Operation->update(input_vec, &output);
+-        zeroize_vector(input_vec);
+-        if (logKeystore2ExceptionIfPresent(rc, "update")) {
+-            ks2Operation = nullptr;
++    LOG(DEBUG) << "[Keymaster] updateCompletely: Processing " << inputLen << " bytes";
++    uint32_t inputConsumed = 0;
++    km_hidl::ErrorCode km_error;
++
++    auto hidlCB = [&](km_hidl::ErrorCode ret, uint32_t inputConsumedDelta,
++                      const hidl_vec<km_hidl::KeyParameter>&,
++                      const hidl_vec<uint8_t>& _output) {
++        km_error = ret;
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        inputConsumed += inputConsumedDelta;
++        if (_output.size() > 0) consumer(reinterpret_cast<const char*>(&_output[0]), _output.size());
++    };
++
++    while (inputConsumed != inputLen) {
++        size_t toRead = inputLen - inputConsumed;
++        auto inputBlob = km_hidl::support::blob2hidlVec(
++            reinterpret_cast<const uint8_t*>(&input[inputConsumed]), toRead);
++        auto error = mDevice->update(mOpHandle, hidl_vec<km_hidl::KeyParameter>(), inputBlob,
++                                     km_hidl::HardwareAuthToken(), km_hidl::VerificationToken(), hidlCB);
++        if (!error.isOk()) {
++            LOG(ERROR) << "[Keymaster] updateCompletely: HIDL error: " << error.description();
++            mDevice = nullptr;
++            return false;
++        }
++        if (km_error != km_hidl::ErrorCode::OK) {
++            LOG(ERROR) << "[Keymaster] updateCompletely: Error " << int32_t(km_error);
++            mDevice = nullptr;
++            mError = Keymaster::convertErrorFromHidl(km_error);
++            return false;
++        }
++        if (inputConsumed > inputLen) {
++            mDevice = nullptr;
+             return false;
+         }
+-        if (output) consumer((const char*)output->data(), output->size());
+     }
+     return true;
+ }
+ 
+ bool KeymasterOperation::finish(std::string* output) {
+-    std::optional<std::vector<uint8_t>> out_vec;
++    LOG(DEBUG) << "[Keymaster] finish: Finalizing operation";
++    km_hidl::ErrorCode km_error;
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<km_hidl::KeyParameter>&,
++                      const hidl_vec<uint8_t>& _output) {
++        km_error = ret;
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        if (output && _output.size() > 0)
++            output->assign(reinterpret_cast<const char*>(&_output[0]), _output.size());
++    };
++    auto error = mDevice->finish(mOpHandle, hidl_vec<km_hidl::KeyParameter>(), hidl_vec<uint8_t>(),
++                                 hidl_vec<uint8_t>(), km_hidl::HardwareAuthToken(),
++                                 km_hidl::VerificationToken(), hidlCb);
++    mDevice = nullptr;
++    if (!error.isOk()) {
++        LOG(ERROR) << "[Keymaster] finish: HIDL error: " << error.description();
++        return false;
++    }
++    if (km_error != km_hidl::ErrorCode::OK) {
++        LOG(ERROR) << "[Keymaster] finish: Error " << int32_t(km_error);
++        mError = Keymaster::convertErrorFromHidl(km_error);
++        return false;
++    }
++    return true;
++}
+ 
+-    if (!ks2Operation) return false;
++// ============================================================================
++// Keymaster Implementation - Direct IKeymasterDevice40 usage (no wrapper)
++// ============================================================================
+ 
+-    auto rc = ks2Operation->finish(std::nullopt, std::nullopt, &out_vec);
+-    if (logKeystore2ExceptionIfPresent(rc, "finish")) {
+-        ks2Operation = nullptr;
+-        return false;
++Keymaster::Keymaster() {
++    printf("[Keymaster] Constructor: Initializing...\n");
++    LOG(INFO) << "[Keymaster] Initializing Keymaster (Raw HIDL interface)";
++
++    // Try to get Trustonic keymaster first (Vivo Y73S uses Trustonic TEE)
++    printf("[Keymaster] Constructor: Trying trustonic service...\n");
++    LOG(INFO) << "[Keymaster] Trying trustonic keymaster service...";
++    mDevice = IKeymasterDevice40::getService("trustonic");
++    if (mDevice) {
++        printf("[Keymaster] Constructor: Found trustonic keymaster 4.0\n");
++        LOG(INFO) << "[Keymaster] Found trustonic keymaster 4.0 service";
++
++        // Get hardware info (no CHECK, just log)
++        bool gotInfo = false;
++        auto rc = mDevice->getHardwareInfo([&](km_hidl::SecurityLevel securityLevel,
++                                               const hidl_string& keymasterName,
++                                               const hidl_string& authorName) {
++            printf("[Keymaster] Constructor: Device=%s, Author=%s, SecurityLevel=%d\n",
++                   keymasterName.c_str(), authorName.c_str(), static_cast<int32_t>(securityLevel));
++            LOG(INFO) << "[Keymaster] Device: " << keymasterName.c_str()
++                      << " from " << authorName.c_str()
++                      << ", Security level: " << static_cast<int32_t>(securityLevel);
++            mSecurityLevel = securityLevel;
++            gotInfo = true;
++        });
++        if (!rc.isOk()) {
++            printf("[Keymaster] Constructor: getHardwareInfo failed\n");
++            LOG(WARNING) << "[Keymaster] getHardwareInfo failed: " << rc.description();
++        }
++
++        // Perform HMAC key agreement (safe version)
++        if (!hmacKeyGenerated) {
++            printf("[Keymaster] Constructor: Performing HMAC agreement...\n");
++            safePerformHmacKeyAgreement();
++        } else {
++            printf("[Keymaster] Constructor: HMAC already done\n");
++        }
++        return;
+     }
+ 
+-    if (output) *output = std::string(out_vec->begin(), out_vec->end());
++    // Try default keymaster 4.0
++    printf("[Keymaster] Constructor: Trying default service...\n");
++    LOG(INFO) << "[Keymaster] Trying default keymaster 4.0 service...";
++    mDevice = IKeymasterDevice40::getService("default");
++    if (mDevice) {
++        printf("[Keymaster] Constructor: Found default keymaster 4.0\n");
++        LOG(INFO) << "[Keymaster] Found default keymaster 4.0 service";
++
++        bool gotInfo = false;
++        auto rc = mDevice->getHardwareInfo([&](km_hidl::SecurityLevel securityLevel,
++                                               const hidl_string& keymasterName,
++                                               const hidl_string& authorName) {
++            printf("[Keymaster] Constructor: Device=%s, Author=%s, SecurityLevel=%d\n",
++                   keymasterName.c_str(), authorName.c_str(), static_cast<int32_t>(securityLevel));
++            LOG(INFO) << "[Keymaster] Device: " << keymasterName.c_str()
++                      << " from " << authorName.c_str()
++                      << ", Security level: " << static_cast<int32_t>(securityLevel);
++            mSecurityLevel = securityLevel;
++            gotInfo = true;
++        });
++        if (!rc.isOk()) {
++            printf("[Keymaster] Constructor: getHardwareInfo failed\n");
++            LOG(WARNING) << "[Keymaster] getHardwareInfo failed: " << rc.description();
++        }
+ 
+-    return true;
++        if (!hmacKeyGenerated) {
++            safePerformHmacKeyAgreement();
++        }
++        return;
++    }
++
++    LOG(ERROR) << "[Keymaster] No keymaster devices found!";
+ }
+ 
+-Keymaster::Keymaster() {
+-    ::ndk::SpAIBinder binder(AServiceManager_waitForService(keystore2_service_name));
+-    auto keystore2Service = ks2::IKeystoreService::fromBinder(binder);
++void Keymaster::safePerformHmacKeyAgreement() {
++    if (!mDevice) return;
++
++    printf("[Keymaster] HMAC: Getting parameters...\n");
++    LOG(INFO) << "[Keymaster] HMAC agreement: Getting parameters...";
++
++    km_hidl::HmacSharingParameters myParams;
++    bool gotParams = false;
++    km_hidl::ErrorCode paramError = km_hidl::ErrorCode::UNKNOWN_ERROR;
+ 
+-    if (!keystore2Service) {
+-        LOG(ERROR) << "Vold unable to connect to keystore2.";
++    auto rc = mDevice->getHmacSharingParameters([&](auto error, auto& params) {
++        paramError = error;
++        printf("[Keymaster] HMAC: getHmacSharingParameters callback error=%d\n", static_cast<int32_t>(error));
++        if (error == km_hidl::ErrorCode::OK) {
++            myParams = params;
++            gotParams = true;
++        }
++    });
++
++    if (!rc.isOk()) {
++        printf("[Keymaster] HMAC: getHmacSharingParameters HIDL error\n");
++        LOG(WARNING) << "[Keymaster] HMAC: getHmacSharingParameters HIDL error: " << rc.description();
+         return;
+     }
+ 
+-    /*
+-     * There are only two options available to vold for the SecurityLevel: TRUSTED_ENVIRONMENT (TEE)
+-     * and STRONGBOX. We don't use STRONGBOX because if a TEE is present it will have Weaver, which
+-     * already strengthens CE, so there's no additional benefit from using StrongBox.
+-     *
+-     * The picture is slightly more complicated because Keystore2 reports a SOFTWARE instance as
+-     * a TEE instance when there isn't a TEE instance available, but in that case, a STRONGBOX
+-     * instance won't be available either, so we'll still be doing the best we can.
+-     */
+-    auto rc = keystore2Service->getSecurityLevel(km::SecurityLevel::TRUSTED_ENVIRONMENT,
+-                                                 &securityLevel);
+-    if (logKeystore2ExceptionIfPresent(rc, "getSecurityLevel"))
+-        LOG(ERROR) << "Vold unable to get security level from keystore2.";
++    if (!gotParams) {
++        printf("[Keymaster] HMAC: getHmacSharingParameters failed error=%d\n", static_cast<int32_t>(paramError));
++        LOG(WARNING) << "[Keymaster] HMAC: getHmacSharingParameters error: " << static_cast<int32_t>(paramError);
++        return;
++    }
++
++    printf("[Keymaster] HMAC: Got parameters, computing HMAC...\n");
++    LOG(INFO) << "[Keymaster] HMAC: Got parameters, computing HMAC...";
++
++    hidl_vec<km_hidl::HmacSharingParameters> allParams;
++    allParams.resize(1);
++    allParams[0] = myParams;
++
++    km_hidl::ErrorCode hmacError = km_hidl::ErrorCode::UNKNOWN_ERROR;
++    bool hmacOk = false;
++
++    rc = mDevice->computeSharedHmac(allParams, [&](auto error, auto& sharingCheck) {
++        hmacError = error;
++        printf("[Keymaster] HMAC: computeSharedHmac callback error=%d, checkSize=%zu\n",
++               static_cast<int32_t>(error), sharingCheck.size());
++        if (error == km_hidl::ErrorCode::OK) {
++            hmacOk = true;
++            LOG(INFO) << "[Keymaster] HMAC: Success, sharingCheck size = " << sharingCheck.size();
++        }
++    });
++
++    if (!rc.isOk()) {
++        printf("[Keymaster] HMAC: computeSharedHmac HIDL error\n");
++        LOG(WARNING) << "[Keymaster] HMAC: computeSharedHmac HIDL error: " << rc.description();
++        return;
++    }
++
++    if (!hmacOk) {
++        printf("[Keymaster] HMAC: computeSharedHmac failed error=%d\n", static_cast<int32_t>(hmacError));
++        LOG(WARNING) << "[Keymaster] HMAC: computeSharedHmac error: " << static_cast<int32_t>(hmacError);
++        return;
++    }
++
++    hmacKeyGenerated = true;
++    printf("[Keymaster] HMAC: SUCCESS\n");
++    LOG(INFO) << "[Keymaster] HMAC: Completed successfully";
+ }
+ 
+ bool Keymaster::generateKey(const km::AuthorizationSet& inParams, std::string* key) {
+-    ks2::KeyDescriptor in_key = {
+-            .domain = ks2::Domain::BLOB,
+-            .alias = std::nullopt,
+-            .nspace = VOLD_NAMESPACE,
+-            .blob = std::nullopt,
+-    };
+-    ks2::KeyMetadata keyMetadata;
+-    auto rc = securityLevel->generateKey(in_key, std::nullopt, inParams.vector_data(), 0, {},
+-                                         &keyMetadata);
++    LOG(INFO) << "[Keymaster] generateKey: Generating new key";
++    if (!mDevice) {
++        LOG(ERROR) << "[Keymaster] generateKey: No device";
++        return false;
++    }
+ 
+-    if (logKeystore2ExceptionIfPresent(rc, "generateKey")) return false;
++    auto hidlParams = convertToHidl(inParams);
++    km_hidl::ErrorCode km_error;
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<uint8_t>& keyBlob,
++                      const km_hidl::KeyCharacteristics&) {
++        km_error = ret;
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        if (key && keyBlob.size() > 0)
++            key->assign(reinterpret_cast<const char*>(&keyBlob[0]), keyBlob.size());
++    };
+ 
+-    if (keyMetadata.key.blob == std::nullopt) {
+-        LOG(ERROR) << "keystore2 generated key blob was null";
++    auto error = mDevice->generateKey(hidlParams.hidl_data(), hidlCb);
++    if (!error.isOk()) {
++        LOG(ERROR) << "[Keymaster] generateKey: HIDL error: " << error.description();
+         return false;
+     }
+-    if (key) *key = std::string(keyMetadata.key.blob->begin(), keyMetadata.key.blob->end());
+-
+-    zeroize_vector(keyMetadata.key.blob.value());
++    if (km_error != km_hidl::ErrorCode::OK) {
++        LOG(ERROR) << "[Keymaster] generateKey: Error " << int32_t(km_error);
++        return false;
++    }
++    LOG(INFO) << "[Keymaster] generateKey: Success";
+     return true;
+ }
+ 
+ bool Keymaster::exportKey(const KeyBuffer& kmKey, std::string* key) {
+-    bool ret = false;
+-    ks2::KeyDescriptor storageKey = {
+-            .domain = ks2::Domain::BLOB,
+-            .alias = std::nullopt,
+-            .nspace = VOLD_NAMESPACE,
+-    };
+-    storageKey.blob = std::make_optional<std::vector<uint8_t>>(kmKey.begin(), kmKey.end());
+-    ks2::EphemeralStorageKeyResponse ephemeral_key_response;
+-    auto rc = securityLevel->convertStorageKeyToEphemeral(storageKey, &ephemeral_key_response);
++    LOG(INFO) << "[Keymaster] exportKey: Attempting export";
++    if (!mDevice) {
++        LOG(ERROR) << "[Keymaster] exportKey: No device";
++        return false;
++    }
+ 
+-    if (logKeystore2ExceptionIfPresent(rc, "exportKey")) goto out;
+-    if (key)
+-        *key = std::string(ephemeral_key_response.ephemeralKey.begin(),
+-                           ephemeral_key_response.ephemeralKey.end());
++    auto keyBlob = km_hidl::support::blob2hidlVec(
++        reinterpret_cast<const uint8_t*>(kmKey.data()), kmKey.size());
+ 
+-    // TODO b/185811713 store the upgraded key blob if provided and delete the old key blob.
++    km_hidl::ErrorCode km_error;
++    std::string exportedKey;
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<uint8_t>& exportData) {
++        km_error = ret;
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        if (exportData.size() > 0)
++            exportedKey.assign(reinterpret_cast<const char*>(&exportData[0]), exportData.size());
++    };
+ 
+-    ret = true;
+-out:
+-    zeroize_vector(ephemeral_key_response.ephemeralKey);
+-    zeroize_vector(storageKey.blob.value());
+-    return ret;
++    auto error = mDevice->exportKey(km_hidl::KeyFormat::RAW, keyBlob,
++                                    hidl_vec<uint8_t>(), hidl_vec<uint8_t>(), hidlCb);
++    if (!error.isOk() || km_error != km_hidl::ErrorCode::OK) {
++        LOG(WARNING) << "[Keymaster] exportKey: Using key directly";
++        if (key) key->assign(kmKey.begin(), kmKey.end());
++        return true;
++    }
++    if (key) *key = exportedKey;
++    LOG(INFO) << "[Keymaster] exportKey: Success";
++    return true;
+ }
+ 
+ bool Keymaster::deleteKey(const std::string& key) {
+-    ks2::KeyDescriptor keyDesc = {
+-            .domain = ks2::Domain::BLOB,
+-            .alias = std::nullopt,
+-            .nspace = VOLD_NAMESPACE,
++    LOG(INFO) << "[Keymaster] deleteKey";
++    if (!mDevice) return false;
++    auto keyBlob = km_hidl::support::blob2hidlVec(key);
++    auto error = mDevice->deleteKey(keyBlob);
++    if (!error.isOk()) {
++        LOG(ERROR) << "[Keymaster] deleteKey: HIDL error";
++        return false;
++    }
++    return true;
++}
++
++bool Keymaster::upgradeKey(const std::string& oldKey, const km::AuthorizationSet& inParams,
++                           std::string* newKey) {
++    printf("[Keymaster] upgradeKey: ENTER oldKeySize=%zu\n", oldKey.size());
++    LOG(INFO) << "[Keymaster] upgradeKey";
++    if (!mDevice) {
++        printf("[Keymaster] upgradeKey: No device\n");
++        return false;
++    }
++
++    auto oldKeyBlob = km_hidl::support::blob2hidlVec(oldKey);
++    auto hidlParams = convertToHidl(inParams);
++    printf("[Keymaster] upgradeKey: hidlParams count=%zu\n", hidlParams.size());
++    km_hidl::ErrorCode km_error = km_hidl::ErrorCode::UNKNOWN_ERROR;
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<uint8_t>& upgradedKeyBlob) {
++        km_error = ret;
++        printf("[Keymaster] upgradeKey callback: error=%d, newKeySize=%zu\n",
++               static_cast<int32_t>(ret), upgradedKeyBlob.size());
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        if (newKey && upgradedKeyBlob.size() > 0)
++            newKey->assign(reinterpret_cast<const char*>(&upgradedKeyBlob[0]), upgradedKeyBlob.size());
+     };
+-    keyDesc.blob =
+-            std::optional<std::vector<uint8_t>>(std::vector<uint8_t>(key.begin(), key.end()));
+ 
+-    auto rc = securityLevel->deleteKey(keyDesc);
+-    return !logKeystore2ExceptionIfPresent(rc, "deleteKey");
++    printf("[Keymaster] upgradeKey: calling mDevice->upgradeKey()...\n");
++    auto error = mDevice->upgradeKey(oldKeyBlob, hidlParams.hidl_data(), hidlCb);
++    printf("[Keymaster] upgradeKey: mDevice->upgradeKey() returned, isOk=%d\n", error.isOk());
++    if (!error.isOk()) {
++        printf("[Keymaster] upgradeKey: HIDL transport error\n");
++        LOG(ERROR) << "[Keymaster] upgradeKey: HIDL error";
++        return false;
++    }
++    if (km_error != km_hidl::ErrorCode::OK) {
++        printf("[Keymaster] upgradeKey: FAILED error=%d\n", static_cast<int32_t>(km_error));
++        LOG(ERROR) << "[Keymaster] upgradeKey: Error " << int32_t(km_error);
++        return false;
++    }
++    printf("[Keymaster] upgradeKey: SUCCESS newKeySize=%zu\n", newKey ? newKey->size() : 0);
++    return true;
+ }
+ 
+ KeymasterOperation Keymaster::begin(const std::string& key, const km::AuthorizationSet& inParams,
+                                     km::AuthorizationSet* outParams) {
+-    ks2::KeyDescriptor keyDesc = {
+-            .domain = ks2::Domain::BLOB,
+-            .alias = std::nullopt,
+-            .nspace = VOLD_NAMESPACE,
++    LOG(INFO) << "[Keymaster] begin: Starting crypto operation";
++    if (!mDevice) {
++        printf("[Keymaster] begin: No device\n");
++        LOG(ERROR) << "[Keymaster] begin: No device";
++        return KeymasterOperation(km::ErrorCode::UNKNOWN_ERROR);
++    }
++
++    auto purposeOpt = extractPurpose(inParams);
++    km_hidl::KeyPurpose purpose = purposeOpt.value_or(km_hidl::KeyPurpose::ENCRYPT);
++    printf("[Keymaster] begin: Purpose=%d, keySize=%zu, paramsCount=%zu\n",
++           static_cast<int32_t>(purpose), key.size(), inParams.size());
++    LOG(DEBUG) << "[Keymaster] begin: Purpose = " << static_cast<int32_t>(purpose);
++
++    auto keyBlob = km_hidl::support::blob2hidlVec(key);
++    auto hidlParams = convertToHidl(inParams);
++    printf("[Keymaster] begin: hidlParams count=%zu\n", hidlParams.size());
++
++    uint64_t mOpHandle = 0;
++    km_hidl::ErrorCode km_error = km_hidl::ErrorCode::UNKNOWN_ERROR;
++    km_hidl::AuthorizationSet hidlOutParams;
++
++    auto hidlCb = [&](km_hidl::ErrorCode ret, const hidl_vec<km_hidl::KeyParameter>& _outParams,
++                      uint64_t operationHandle) {
++        km_error = ret;
++        printf("[Keymaster] begin callback: error=%d, handle=%llu\n", static_cast<int32_t>(ret), (unsigned long long)operationHandle);
++        if (km_error != km_hidl::ErrorCode::OK) return;
++        hidlOutParams = _outParams;
++        mOpHandle = operationHandle;
+     };
+-    keyDesc.blob =
+-            std::optional<std::vector<uint8_t>>(std::vector<uint8_t>(key.begin(), key.end()));
+ 
+-    ks2::CreateOperationResponse cor;
+-    auto rc = securityLevel->createOperation(keyDesc, inParams.vector_data(), false, &cor);
+-    if (logKeystore2ExceptionIfPresent(rc, "createOperation")) {
+-        if (rc.getExceptionCode() == EX_SERVICE_SPECIFIC)
+-            return KeymasterOperation((km::ErrorCode)rc.getServiceSpecificError());
+-        else
+-            return KeymasterOperation();
++    printf("[Keymaster] begin: calling mDevice->begin()...\n");
++    auto error = mDevice->begin(purpose, keyBlob, hidlParams.hidl_data(),
++                                km_hidl::HardwareAuthToken(), hidlCb);
++    printf("[Keymaster] begin: mDevice->begin() returned, isOk=%d\n", error.isOk());
++    if (!error.isOk()) {
++        printf("[Keymaster] begin: HIDL transport error: %s\n", error.description().c_str());
++        LOG(ERROR) << "[Keymaster] begin: HIDL error: " << error.description();
++        return KeymasterOperation(km::ErrorCode::UNKNOWN_ERROR);
+     }
+ 
+-    if (!cor.iOperation) {
+-        LOG(ERROR) << "keystore2 createOperation didn't return an operation";
+-        return KeymasterOperation();
++    printf("[Keymaster] begin: km_error=%d\n", static_cast<int32_t>(km_error));
++    if (km_error == km_hidl::ErrorCode::KEY_REQUIRES_UPGRADE) {
++        printf("[Keymaster] begin: Key requires upgrade, attempting...\n");
++        LOG(INFO) << "[Keymaster] begin: Key requires upgrade";
++        std::string upgradedKey;
++        // upgradeKey needs empty params - keymaster will use current OS_VERSION/OS_PATCHLEVEL
++        km::AuthorizationSet emptyParams;
++        if (upgradeKey(key, emptyParams, &upgradedKey)) {
++            printf("[Keymaster] begin: upgradeKey succeeded, retrying begin with upgraded key\n");
++            auto upgradedKeyBlob = km_hidl::support::blob2hidlVec(upgradedKey);
++            error = mDevice->begin(purpose, upgradedKeyBlob, hidlParams.hidl_data(),
++                                   km_hidl::HardwareAuthToken(), hidlCb);
++            if (error.isOk() && km_error == km_hidl::ErrorCode::OK) {
++                printf("[Keymaster] begin: Success with upgraded key\n");
++                LOG(INFO) << "[Keymaster] begin: Success with upgraded key";
++                if (outParams) *outParams = convertFromHidl(hidlOutParams);
++                return KeymasterOperation(mDevice.get(), mOpHandle, upgradedKey);
++            }
++            printf("[Keymaster] begin: begin with upgraded key failed, error=%d\n", static_cast<int32_t>(km_error));
++        }
+     }
+ 
+-    if (outParams && cor.parameters) *outParams = cor.parameters->keyParameter;
+-    return KeymasterOperation(cor.iOperation, cor.upgradedBlob);
+-}
+-
+-void Keymaster::earlyBootEnded() {
+-    ::ndk::SpAIBinder binder(AServiceManager_getService(maintenance_service_name));
+-    auto maint_service = ks2_maint::IKeystoreMaintenance::fromBinder(binder);
+-
+-    if (!maint_service) {
+-        LOG(ERROR) << "Unable to connect to keystore2 maintenance service for earlyBootEnded";
+-        return;
++    if (km_error != km_hidl::ErrorCode::OK) {
++        printf("[Keymaster] begin: FAILED with error=%d\n", static_cast<int32_t>(km_error));
++        LOG(ERROR) << "[Keymaster] begin: Error " << int32_t(km_error);
++        return KeymasterOperation(Keymaster::convertErrorFromHidl(km_error));
+     }
+ 
+-    auto rc = maint_service->earlyBootEnded();
+-    logKeystore2ExceptionIfPresent(rc, "earlyBootEnded");
++    if (outParams) *outParams = convertFromHidl(hidlOutParams);
++    printf("[Keymaster] begin: SUCCESS handle=%llu\n", (unsigned long long)mOpHandle);
++    LOG(INFO) << "[Keymaster] begin: Success, handle = " << mOpHandle;
++    return KeymasterOperation(mDevice.get(), mOpHandle);
+ }
+ 
+-void Keymaster::deleteAllKeys() {
+-    ::ndk::SpAIBinder binder(AServiceManager_getService(maintenance_service_name));
+-    auto maint_service = ks2_maint::IKeystoreMaintenance::fromBinder(binder);
++bool Keymaster::isSecure() {
++    if (!mDevice) return false;
++    return mSecurityLevel != km_hidl::SecurityLevel::SOFTWARE;
++}
+ 
+-    if (!maint_service) {
+-        LOG(ERROR) << "Unable to connect to keystore2 maintenance service for deleteAllKeys";
+-        return;
+-    }
++/* static */ void Keymaster::earlyBootEnded() {
++    LOG(INFO) << "[Keymaster] earlyBootEnded: no-op for HIDL V4.0";
++}
+ 
+-    auto rc = maint_service->deleteAllKeys();
+-    logKeystore2ExceptionIfPresent(rc, "deleteAllKeys");
++/* static */ void Keymaster::deleteAllKeys() {
++    LOG(INFO) << "[Keymaster] deleteAllKeys: not supported on HIDL V4.0";
+ }
+ 
+ }  // namespace vold
+diff --git a/Keymaster.h b/Keymaster.h
+index 47bf4a2..6eeeebd 100644
+--- a/Keymaster.h
++++ b/Keymaster.h
+@@ -13,7 +13,11 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+-// TODO: Maybe "Keymaster" should be replaced with Keystore2 everywhere?
++
++// Hybrid Keymaster implementation for TWRP
++// Uses raw HIDL Keymaster V4.0 interface directly (no wrapper)
++// Modified for Vivo Y73S (PD2031)
++
+ #ifndef ANDROID_VOLD_KEYMASTER_H
+ #define ANDROID_VOLD_KEYMASTER_H
+ 
+@@ -22,37 +26,52 @@
+ #include <memory>
+ #include <string>
+ #include <utility>
++#include <functional>
++#include <optional>
+ 
+ #include <android-base/macros.h>
++
++// HIDL Keymaster V4.0 headers
++#include <android/hardware/keymaster/4.0/IKeymasterDevice.h>
++#include <keymasterV4_1/authorization_set.h>
++
++// Keymint support for TWRP compatibility
+ #include <keymint_support/authorization_set.h>
+ #include <keymint_support/keymint_tags.h>
+-
+ #include <aidl/android/hardware/security/keymint/ErrorCode.h>
+-#include <aidl/android/system/keystore2/IKeystoreService.h>
+-#include <android/binder_manager.h>
+ 
+ namespace android {
+ namespace vold {
+ 
+-namespace ks2 = ::aidl::android::system::keystore2;
++// Use keymint namespace for TWRP compatibility (same as Android 12 interface)
+ namespace km = ::aidl::android::hardware::security::keymint;
+ 
+-// C++ wrappers to the Keystore2 AIDL interface.
+-// This is tailored to the needs of KeyStorage, but could be extended to be
+-// a more general interface.
++// HIDL namespace alias for internal use
++namespace km_hidl = ::android::hardware::keymaster::V4_0;
+ 
+-// Wrapper for a Keystore2 operation handle representing an
+-// ongoing Keystore2 operation.  Aborts the operation
++// Use raw IKeymasterDevice40 directly instead of support wrapper
++using KmDevice = km_hidl::IKeymasterDevice;
++
++// Wrapper for a Keymaster operation handle representing an
++// ongoing Keymaster operation. Aborts the operation
+ // in the destructor if it is unfinished. Methods log failures
+ // to LOG(ERROR).
+ class KeymasterOperation {
+   public:
+     ~KeymasterOperation();
++
+     // Is this instance valid? This is false if creation fails, and becomes
+     // false on finish or if an update fails.
+-    explicit operator bool() const { return (bool)ks2Operation; }
+-    km::ErrorCode getErrorCode() const { return errorCode; }
+-    std::optional<std::string> getUpgradedBlob() const { return upgradedBlob; }
++    explicit operator bool() const {
++        return mError == km::ErrorCode::OK && mDevice != nullptr;
++    }
++
++    // Get error code (keymint style for TWRP compatibility)
++    km::ErrorCode getErrorCode() const { return mError; }
++
++    // Get upgraded blob if key was upgraded
++    std::optional<std::string> getUpgradedBlob() const { return mUpgradedBlob; }
++
+     // Call "update" repeatedly until all of the input is consumed, and
+     // concatenate the output. Return true on success.
+     template <class TI, class TO>
+@@ -65,73 +84,115 @@ class KeymasterOperation {
+ 
+     // Finish and write the output to this string, unless pointer is null.
+     bool finish(std::string* output);
++
+     // Move constructor
+     KeymasterOperation(KeymasterOperation&& rhs) { *this = std::move(rhs); }
++
+     // Construct an object in an error state for error returns
+-    KeymasterOperation() { errorCode = km::ErrorCode::UNKNOWN_ERROR; }
++    KeymasterOperation()
++        : mDevice{nullptr}, mOpHandle{0}, mError{km::ErrorCode::UNKNOWN_ERROR} {}
++
+     // Move Assignment
+     KeymasterOperation& operator=(KeymasterOperation&& rhs) {
+-        ks2Operation = rhs.ks2Operation;
+-        rhs.ks2Operation = nullptr;
+-
+-        upgradedBlob = rhs.upgradedBlob;
+-        rhs.upgradedBlob = std::nullopt;
+-
+-        errorCode = rhs.errorCode;
+-        rhs.errorCode = km::ErrorCode::UNKNOWN_ERROR;
+-
++        mDevice = rhs.mDevice;
++        rhs.mDevice = nullptr;
++        mOpHandle = rhs.mOpHandle;
++        rhs.mOpHandle = 0;
++        mError = rhs.mError;
++        rhs.mError = km::ErrorCode::UNKNOWN_ERROR;
++        mUpgradedBlob = std::move(rhs.mUpgradedBlob);
++        rhs.mUpgradedBlob = std::nullopt;
+         return *this;
+     }
+ 
+   private:
+-    KeymasterOperation(std::shared_ptr<ks2::IKeystoreOperation> ks2Op,
+-                       std::optional<std::vector<uint8_t>> blob)
+-        : ks2Operation{ks2Op}, errorCode{km::ErrorCode::OK} {
+-        if (blob)
+-            upgradedBlob = std::optional(std::string(blob->begin(), blob->end()));
+-        else
+-            upgradedBlob = std::nullopt;
+-    }
++    KeymasterOperation(KmDevice* d, uint64_t h)
++        : mDevice{d}, mOpHandle{h}, mError{km::ErrorCode::OK} {}
+ 
+-    KeymasterOperation(km::ErrorCode errCode) : errorCode{errCode} {}
++    KeymasterOperation(KmDevice* d, uint64_t h, const std::string& upgradedBlob)
++        : mDevice{d}, mOpHandle{h}, mError{km::ErrorCode::OK},
++          mUpgradedBlob{upgradedBlob} {}
++
++    KeymasterOperation(km::ErrorCode error)
++        : mDevice{nullptr}, mOpHandle{0}, mError{error} {}
+ 
+     bool updateCompletely(const char* input, size_t inputLen,
+                           const std::function<void(const char*, size_t)> consumer);
+ 
+-    std::shared_ptr<ks2::IKeystoreOperation> ks2Operation;
+-    std::optional<std::string> upgradedBlob;
+-    km::ErrorCode errorCode;
++    KmDevice* mDevice;
++    uint64_t mOpHandle;
++    km::ErrorCode mError;
++    std::optional<std::string> mUpgradedBlob;
++
+     DISALLOW_COPY_AND_ASSIGN(KeymasterOperation);
+     friend class Keymaster;
+ };
+ 
+-// Wrapper for keystore2 methods that vold uses.
++// Wrapper for Keymaster device for methods that start a KeymasterOperation or are not
++// part of one. Uses raw HIDL Keymaster V4.0 interface directly.
+ class Keymaster {
+   public:
+     Keymaster();
+-    // false if we failed to get a keystore2 security level.
+-    explicit operator bool() { return (bool)securityLevel; }
+-    // Generate a key using keystore2 from the given params.
++
++    // false if we failed to open the keymaster device.
++    explicit operator bool() { return mDevice.get() != nullptr; }
++
++    // Generate a key using keymaster from the given params.
++    // Uses keymint AuthorizationSet for TWRP compatibility
+     bool generateKey(const km::AuthorizationSet& inParams, std::string* key);
+-    // Exports a keystore2 key with STORAGE_KEY tag wrapped with a per-boot ephemeral key
++
++    // Exports a keymaster key with STORAGE_KEY tag wrapped with a per-boot ephemeral key
++    // Note: This may not be supported on all devices
+     bool exportKey(const KeyBuffer& kmKey, std::string* key);
+-    // If supported, permanently delete a key from the keymint device it belongs to.
++
++    // If the keymaster supports it, permanently delete a key.
+     bool deleteKey(const std::string& key);
++
++    // Replace stored key blob in response to KM_ERROR_KEY_REQUIRES_UPGRADE.
++    bool upgradeKey(const std::string& oldKey, const km::AuthorizationSet& inParams,
++                    std::string* newKey);
++
+     // Begin a new cryptographic operation, collecting output parameters if pointer is non-null
+-    // If the key was upgraded as a result of a call to this method, the returned KeymasterOperation
+-    // also stores the upgraded key blob.
++    // Uses keymint AuthorizationSet for TWRP compatibility
++    // KeyPurpose is extracted from inParams TAG_PURPOSE
+     KeymasterOperation begin(const std::string& key, const km::AuthorizationSet& inParams,
+                              km::AuthorizationSet* outParams);
+ 
++    // Check if device is secure (TEE backed)
++    bool isSecure();
++
+     // Tell all Keymint devices that early boot has ended and early boot-only keys can no longer
+-    // be created or used.
++    // be created or used. For HIDL V4.0, this is a no-op.
+     static void earlyBootEnded();
+ 
+     // Tell all Keymint devices to delete all rollback-protected keys.
++    // For HIDL V4.0, this attempts to delete all keys.
+     static void deleteAllKeys();
+ 
++  public:
++    // Error conversion (public for KeymasterOperation access)
++    static km::ErrorCode convertErrorFromHidl(km_hidl::ErrorCode error);
++
+   private:
+-    std::shared_ptr<ks2::IKeystoreSecurityLevel> securityLevel;
++    android::sp<KmDevice> mDevice;
++    km_hidl::SecurityLevel mSecurityLevel = km_hidl::SecurityLevel::SOFTWARE;
++    static bool hmacKeyGenerated;
++
++    // Safe HMAC key agreement (won't crash on failure)
++    void safePerformHmacKeyAgreement();
++
++    // Convert keymint AuthorizationSet to HIDL AuthorizationSet
++    static km_hidl::AuthorizationSet convertToHidl(const km::AuthorizationSet& keymintParams);
++
++    // Convert HIDL AuthorizationSet to keymint AuthorizationSet
++    static km::AuthorizationSet convertFromHidl(const km_hidl::AuthorizationSet& hidlParams);
++
++    // Convert keymint ErrorCode to HIDL ErrorCode
++    static km_hidl::ErrorCode convertErrorToHidl(km::ErrorCode error);
++
++    // Extract KeyPurpose from AuthorizationSet
++    static std::optional<km_hidl::KeyPurpose> extractPurpose(const km::AuthorizationSet& params);
++
+     DISALLOW_COPY_AND_ASSIGN(Keymaster);
+ };
+ 

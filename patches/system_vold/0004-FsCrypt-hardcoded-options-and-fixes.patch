@@ -1,0 +1,74 @@
+diff --git a/FsCrypt.cpp b/FsCrypt.cpp
+index 7505e56..eb0a1ca 100644
+--- a/FsCrypt.cpp
++++ b/FsCrypt.cpp
+@@ -236,22 +236,37 @@ static bool IsEmmcStorage(const std::string& blk_device) {
+ 
+ // Retrieve the options to use for encryption policies on the /data filesystem.
+ static bool get_data_file_encryption_options(EncryptionOptions* options) {
++    printf("[DEBUG] get_data_file_encryption_options: ENTER\n");
+     if (fstab_default.empty()) {
++        printf("[DEBUG] get_data_file_encryption_options: fstab empty, reading...\n");
+         if (!ReadDefaultFstab(&fstab_default)) {
+-            PLOG(ERROR) << "Failed to open default fstab";
+-            return false;
++            printf("[DEBUG] get_data_file_encryption_options: ReadDefaultFstab FAILED, using hardcoded options\n");
++            // Hardcoded fallback for Vivo Y73S (PD2031) - aes-256-xts:aes-256-cts v2
++            options->version = 1;  // Use v1 policy for legacy keyring support
++            options->contents_mode = 1;  // FSCRYPT_MODE_AES_256_XTS
++            options->filenames_mode = 4; // FSCRYPT_MODE_AES_256_CTS
++            options->flags = 0;
++            options->use_hw_wrapped_key = false;
++            printf("[DEBUG] get_data_file_encryption_options: using hardcoded v2 aes-256-xts:aes-256-cts\n");
++            return true;
+         }
++        printf("[DEBUG] get_data_file_encryption_options: ReadDefaultFstab OK, size=%zu\n", fstab_default.size());
+     }
++    printf("[DEBUG] get_data_file_encryption_options: looking for %s\n", DATA_MNT_POINT);
+     auto entry = GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT);
+     if (entry == nullptr) {
++        printf("[DEBUG] get_data_file_encryption_options: entry is NULL!\n");
+         LOG(ERROR) << "No mount point entry for " << DATA_MNT_POINT;
+         return false;
+     }
++    printf("[DEBUG] get_data_file_encryption_options: found entry, enc_opts=%s\n", entry->encryption_options.c_str());
+     if (!ParseOptions(entry->encryption_options, options)) {
++        printf("[DEBUG] get_data_file_encryption_options: ParseOptions FAILED\n");
+         LOG(ERROR) << "Unable to parse encryption options for " << DATA_MNT_POINT ": "
+                    << entry->encryption_options;
+         return false;
+     }
++    printf("[DEBUG] get_data_file_encryption_options: ParseOptions OK, version=%d\n", options->version);
+     if ((options->flags & FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32) &&
+         !IsEmmcStorage(entry->blk_device)) {
+         LOG(ERROR) << "The emmc_optimized encryption flag is only allowed on eMMC storage.  Remove "
+@@ -450,13 +465,19 @@ static bool try_reload_ce_keys() {
+ }
+ 
+ bool fscrypt_initialize_systemwide_keys() {
++    printf("[DEBUG] fscrypt_initialize_systemwide_keys: ENTER\n");
+     LOG(INFO) << "fscrypt_initialize_systemwide_keys";
+ 
+     EncryptionOptions options;
+-    if (!get_data_file_encryption_options(&options)) return false;
++    if (!get_data_file_encryption_options(&options)) {
++        printf("[DEBUG] fscrypt_initialize_systemwide_keys: get_data_file_encryption_options FAILED\n");
++        return false;
++    }
++    printf("[DEBUG] fscrypt_initialize_systemwide_keys: options OK, hw_wrapped=%d\n", options.use_hw_wrapped_key);
+ 
+     KeyBuffer device_key;
+ install:
++    printf("[DEBUG] fscrypt_initialize_systemwide_keys: calling retrieveOrGenerateKey\n");
+     if (!retrieveOrGenerateKey(device_key_path, device_key_temp, kEmptyAuthentication,
+                                makeGen(options), &device_key))
+         return false;
+@@ -465,7 +486,7 @@ install:
+     if (!install_storage_key(DATA_MNT_POINT, options, device_key, &device_policy)) {
+         if (retry) {
+             printf("Trying %s wrappedkey\n", options.use_hw_wrapped_key ? "without" : "with");
+-            GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT)->fs_mgr_flags.wrapped_key =
++            auto* entry = GetEntryForMountPoint(&fstab_default, DATA_MNT_POINT); if (entry) entry->fs_mgr_flags.wrapped_key =
+                 options.use_hw_wrapped_key = !options.use_hw_wrapped_key;
+             retry = false;
+             goto install;
