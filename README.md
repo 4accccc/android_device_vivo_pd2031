@@ -17,36 +17,67 @@
 | Release Date            | Oct. 10, 2020                                                        |
 
 ## Compatible Devices
-
 - vivo Y73s
+
 - **Codename**: PD2031
 - **Platform**: MediaTek MT6853 (Dimensity 720)
 - **Android Version**: 10
 - **Partition Layout**: System-as-root, non-A/B, Dynamic Partitions (super)
 - **Encryption**: FBE (File-Based Encryption) with wrappedkey, aes-256-xts
+
+## 已解决项目
+
+* 触屏
+* 亮度
+* USB调试
+* Data分区解密
+* MTP
+
+<img src="https://raw.githubusercontent.com/4accccc/randomstuffs/refs/heads/main/MainPage.png" width="15%" alt="主页"><img src="https://raw.githubusercontent.com/4accccc/randomstuffs/refs/heads/main/Decrypted_Data.png" width="15%" alt="解密Data示例">
+
+## Bugs
+* ~进入adb sideload后无法点击取消按钮退出。~   
+解决方案: 修改twrp源码加入5秒超时，点击取消按钮后5秒强制退出。
+* ~如果有锁屏密码，在输入密码尝试解密时会直接软重启。~   
+解决方案: 应该是除了重写Keymaster.cpp以外最复杂的，这里也解释一下为什么要重写，TWRP12.1默认走的是android 11以上的AIDL(Keystore2)架构，需要用安卓10的keymaster hidl直接重写twrp原版自带的aidl。(这个问题主要涉及Decrypt.cpp)
+* 有的时候在文件管理内无法修改用户数据内某些文件的文件名(mv命令报错)，多次尝试改名会触发一次软重启，然后提示需要输入锁屏密码解密data(即使没有锁屏密码)，不输入密码直接去查看用户数据仍是解密的。再次尝试修改用户数据内文件名成功。   
+状态: 无法稳定复现，如果你能复现，请立即保存recovery.log和dmesg(如果不会的话可以在终端里分别执行start_dmesg_log.sh和start_recovery_log.sh)，然后开新issue上传这两个附件。
+* ~可以提取boot分区，但是magisk安装报错无法unpack boot，原因未知。~   
+解决方案：magisk无法直接打开block设备导致无法读取boot分区。现在加入刷前预处理:复制boot到临时文件→保存原始副本→重定向符号链接，刷完后处理:恢复符号链接→比较文件是否被修改→修改了才写回
+
 ## 如何构建？
-最好科学上网。   
+最好科学上网。如果有哪步运行出错了别开issue问我，烦人。问AI就行了   
 先安装依赖
 ~~~
 sudo apt install bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev git
 ~~~
-[然后跟着这个教程装repo](https://mirrors.tuna.tsinghua.edu.cn/help/git-repo/)，repo装好了过后，在你的用户目录
+
+[然后跟着这个教程装repo](https://mirrors.tuna.tsinghua.edu.cn/help/git-repo/)，repo装好了过后，在你的用户目录   
+
 ~~~
 mkdir twrp
 cd twrp
-export ALLOW_MISSING_DEPENDENCIES := true
+export ALLOW_MISSING_DEPENDENCIES = true
 repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
 repo sync -j$(nproc)   # $(nproc)是最大线程，你也可以改小点比如4,2啥的
 mkdir -p device/vivo
 cd device/vivo
 git clone https://github.com/4accccc/android_device_vivo_pd2031.git k6853v1_64_6360
 cd ../..
-python3 device/vivo/k6853v1_64_6360/patches/apply-patches.sh   # 一定要执行！不然build出来的twrp无法解密分区！
-~~~~
-这里建议先去BoardConfig.mk修改PLATFORM_SECURITY_PATCH和VENDOR_SECURITY_PATCH，要修改成你手机实际的版本，不然解密不了data。(5.12.1偷渡橘子2的不用改)
-~~~~
+python3 device/vivo/k6853v1_64_6360/patches/apply-patches.sh
+# 一定要执行！不然build出来的twrp无法解密分区！
+# 到这里建议先去BoardConfig.mk修改PLATFORM_SECURITY_PATCH和VENDOR_SECURITY_PATCH，要修改成你手机实际的版本，不然解密不了data。(5.12.1偷渡橘子2的不用改)
 source build/envsetup.sh
 lunch omni_k6853v1_64_6360-eng
 mka recoveryimage
-python3 device/vivo/k6853v1_64_6360/make_hybrid.py   # 一定要运行！vivo会验证avb footer数据，校验不过tee会返回一个错误的patchlevel(20300101)，无法解密data。
+python3 device/vivo/k6853v1_64_6360/make_hybrid.py
+# 一定要运行！vivo会验证avb footer数据，校验不过tee会返回一个错误的patchlevel(20300101)，无法解密data。
+# 这个脚本能用vivo原厂avb footer数据和你构建出的twrp结合生出来一个杂交镜像骗过校验。
 ~~~
+
+## Credits
+* [4accccc](https://github.com/4accccc) 设备提供，debug以及手写部分debug代码。
+* [vivo-4.x-kernel-autopatch](https://github.com/4accccc/vivo-4.x-kernel-autopatch) 修补kernel文件，破除mount限制。
+* [Claude Code](https://github.com/anthropics/claude-code) 提供make_hybrid.py，辅助重写Keymaster.cpp等解密相关的文件。
+* [platform_manifest_twrp_aosp](https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp) Minimal manifest for building TWRP for devices shipped with Android 10+.
+* [Android 10 system_vold](https://android.googlesource.com/platform/system/vold/+/refs/tags/android-10.0.0_r47) 对重写解密相关文件，理解原理十分有帮助。

@@ -1,0 +1,129 @@
+diff --git a/twrpinstall/twinstall.cpp b/twrpinstall/twinstall.cpp
+index 6abccea7..bc883e3a 100644
+--- a/twrpinstall/twinstall.cpp
++++ b/twrpinstall/twinstall.cpp
+@@ -183,6 +183,48 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
+ 	pid_t pid = fork();
+ 	if (pid == 0) {
+ 		close(pipe_fd[0]);
++
++		// Pre-process for Magisk: dd boot partition to temp file and redirect symlink
++		// This fixes "Permission denied" when magiskboot tries to open block device directly
++		const char* boot_link = "/dev/block/by-name/boot";
++		const char* boot_tmp = "/tmp/twrp_boot.img";
++		const char* boot_orig = "/tmp/twrp_boot_orig.img";  // Keep original for comparison
++		const char* boot_link_backup = "/dev/block/by-name/boot.orig";
++		char boot_real[PATH_MAX] = {0};
++
++		// Read the original symlink target
++		ssize_t len = readlink(boot_link, boot_real, sizeof(boot_real) - 1);
++		if (len > 0) {
++			boot_real[len] = '\0';
++			printf("I:Original boot symlink: %s -> %s\n", boot_link, boot_real);
++
++			// Copy boot partition to temp file
++			printf("I:Pre-copying boot partition for Magisk compatibility...\n");
++			int src_fd = open(boot_real, O_RDONLY);
++			if (src_fd >= 0) {
++				int dst_fd = open(boot_tmp, O_WRONLY | O_CREAT | O_TRUNC, 0666);
++				int orig_fd = open(boot_orig, O_WRONLY | O_CREAT | O_TRUNC, 0666);
++				if (dst_fd >= 0) {
++					char buf[65536];
++					ssize_t n;
++					while ((n = read(src_fd, buf, sizeof(buf))) > 0) {
++						write(dst_fd, buf, n);
++						if (orig_fd >= 0) write(orig_fd, buf, n);  // Also save original
++					}
++					close(dst_fd);
++					if (orig_fd >= 0) close(orig_fd);
++					printf("I:Boot partition copied to %s\n", boot_tmp);
++
++					// Backup original symlink and create new one pointing to temp file
++					rename(boot_link, boot_link_backup);
++					if (symlink(boot_tmp, boot_link) == 0) {
++						printf("I:Redirected %s -> %s\n", boot_link, boot_tmp);
++					}
++				}
++				close(src_fd);
++			}
++		}
++
+ 		execve(chr_args[0], const_cast<char**>(chr_args), environ);
+ 		printf("E:Can't execute '%s': %s\n", chr_args[0], strerror(errno));
+ 		_exit(-1);
+@@ -232,6 +274,75 @@ static int Run_Update_Binary(const char *path, int* wipe_cache, zip_type ztype)
+ 	fclose(child_data);
+ 
+ 	int waitrc = TWFunc::Wait_For_Child(pid, &status, "Updater");
++
++	// Post-process for Magisk: restore symlink and write modified boot back to partition
++	const char* boot_link = "/dev/block/by-name/boot";
++	const char* boot_tmp_post = "/tmp/twrp_boot.img";
++	const char* boot_orig_post = "/tmp/twrp_boot_orig.img";
++	const char* boot_link_backup = "/dev/block/by-name/boot.orig";
++	char boot_real_post[PATH_MAX] = {0};
++
++	// Check if backup symlink exists (meaning pre-process was triggered)
++	ssize_t len_post = readlink(boot_link_backup, boot_real_post, sizeof(boot_real_post) - 1);
++	if (len_post > 0) {
++		boot_real_post[len_post] = '\0';
++		printf("I:Restoring boot symlink: %s -> %s\n", boot_link, boot_real_post);
++
++		// Restore original symlink
++		unlink(boot_link);
++		rename(boot_link_backup, boot_link);
++
++		// If install succeeded, check if boot was modified and write back
++		if (waitrc == 0) {
++			struct stat st_tmp, st_orig;
++			if (stat(boot_tmp_post, &st_tmp) == 0 && stat(boot_orig_post, &st_orig) == 0) {
++				// Compare files to see if modified
++				bool modified = (st_tmp.st_size != st_orig.st_size);
++				if (!modified) {
++					// Same size, compare content (just first 4KB for speed)
++					int fd1 = open(boot_tmp_post, O_RDONLY);
++					int fd2 = open(boot_orig_post, O_RDONLY);
++					if (fd1 >= 0 && fd2 >= 0) {
++						char buf1[4096], buf2[4096];
++						ssize_t n1 = read(fd1, buf1, sizeof(buf1));
++						ssize_t n2 = read(fd2, buf2, sizeof(buf2));
++						if (n1 != n2 || memcmp(buf1, buf2, n1) != 0) {
++							modified = true;
++						}
++					}
++					if (fd1 >= 0) close(fd1);
++					if (fd2 >= 0) close(fd2);
++				}
++
++				if (modified) {
++					printf("I:Boot image was modified, writing back to partition...\n");
++					int src_fd = open(boot_tmp_post, O_RDONLY);
++					if (src_fd >= 0) {
++						int dst_fd = open(boot_real_post, O_WRONLY);
++						if (dst_fd >= 0) {
++							char buf[65536];
++							ssize_t n;
++							while ((n = read(src_fd, buf, sizeof(buf))) > 0) {
++								write(dst_fd, buf, n);
++							}
++							fsync(dst_fd);
++							close(dst_fd);
++							printf("I:Boot partition updated successfully\n");
++						} else {
++							printf("E:Failed to open boot partition for writing: %s\n", strerror(errno));
++						}
++						close(src_fd);
++					}
++				} else {
++					printf("I:Boot image was not modified, skipping write back\n");
++				}
++			}
++		}
++		// Clean up temp files
++		unlink(boot_tmp_post);
++		unlink(boot_orig_post);
++	}
++
+ 	if (waitrc != 0)
+ 		return INSTALL_ERROR;
+ 
