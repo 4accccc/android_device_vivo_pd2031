@@ -8,6 +8,11 @@ on early-init
     setprop ro.vndk.version 29
     
     mkdir /mnt/vendor/persist 0771 system system
+    mkdir /persist 0771 system system
+    mkdir /protect_f 0771 system system
+    mkdir /protect_s 0771 system system
+    mkdir /nvdata 0771 system system
+    mkdir /nvcfg 0771 system system
     symlink /mnt/vendor/persist /vendor/persist
 
 on init
@@ -23,7 +28,6 @@ on post-fs
     exec u:r:recovery:s0 root root -- /system/bin/resetprop ro.product.build.version.sdk 29
     exec u:r:recovery:s0 root root -- /system/bin/resetprop ro.odm.build.version.sdk 29
     exec u:r:recovery:s0 root root -- /system/bin/resetprop ro.system_ext.build.version.sdk 29
-
 
     exec u:r:recovery:s0 root root -- /system/bin/clear_bcb.sh
 
@@ -98,11 +102,9 @@ on late-init
 
 on property:recovery.service=1
     stop keystore2
-    # Start keymaster and gatekeeper (HIDL services)
     start vendor.keymaster-4-0-trustonic
     start gatekeeper-1-0
     exec_start wait_for_keymaster
-    # Start old keystore service for Android 10 password decryption
     start keystore
     start guardianangle
 
@@ -135,7 +137,6 @@ service guardianangle /system/bin/guardianangle
     seclabel u:r:recovery:s0
 
 
-# 旧版keystore服务 (原厂使用)
 service keystore_auth /system/bin/keystore_auth
     disabled
     user system

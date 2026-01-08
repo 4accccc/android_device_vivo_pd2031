@@ -1,5 +1,6 @@
 #!/system/bin/sh
-# 删了rec重启进rec功能就废了
+# Write BCB (bootloader control block) to misc partition for recovery boot
+# Then reboot
 
 MISC_PARTITION="/dev/block/by-name/misc"
 

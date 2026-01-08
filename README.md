@@ -17,6 +17,7 @@
 | Release Date            | Oct. 10, 2020                                                        |
 
 ## Compatible Devices
+
 - vivo Y73s
 
 - **Codename**: PD2031
@@ -29,21 +30,36 @@
 
 * 触屏
 * 亮度
+* 挂载分区
 * USB调试
 * Data分区解密
 * MTP
 
 <img src="https://raw.githubusercontent.com/4accccc/randomstuffs/refs/heads/main/MainPage.png" width="15%" alt="主页"><img src="https://raw.githubusercontent.com/4accccc/randomstuffs/refs/heads/main/Decrypted_Data.png" width="15%" alt="解密Data示例">
 
-## Bugs
-* ~进入adb sideload后无法点击取消按钮退出。~   
+## Bugs   
+   
+### 待解决：   
+* 有的时候在文件管理内无法修改用户数据内某些文件的文件名(mv命令报错)，多次尝试改名会触发一次软重启，然后提示需要输入锁屏密码解密data(即使没有锁屏密码)，不输入密码直接去查看用户数据仍是解密的。再次尝试修改用户数据内文件名成功。
+
+状态: 无法稳定复现，如果你能复现，请立即保存recovery.log和dmesg(如果不会的话可以在终端里分别执行start_dmesg_log.sh和start_recovery_log.sh)，然后开新issue上传这两个附件。   
+   
+### 已解决：
+* ~进入adb sideload后无法点击取消按钮退出。~
+
 解决方案: 修改twrp源码加入5秒超时，点击取消按钮后5秒强制退出。
-* ~如果有锁屏密码，在输入密码尝试解密时会直接软重启。~   
+
+* ~如果有锁屏密码，在输入密码尝试解密时会直接软重启。~
+
 解决方案: 应该是除了重写Keymaster.cpp以外最复杂的，这里也解释一下为什么要重写，TWRP12.1默认走的是android 11以上的AIDL(Keystore2)架构，需要用安卓10的keymaster hidl直接重写twrp原版自带的aidl。(这个问题主要涉及Decrypt.cpp)
-* 有的时候在文件管理内无法修改用户数据内某些文件的文件名(mv命令报错)，多次尝试改名会触发一次软重启，然后提示需要输入锁屏密码解密data(即使没有锁屏密码)，不输入密码直接去查看用户数据仍是解密的。再次尝试修改用户数据内文件名成功。   
-状态: 无法稳定复现，如果你能复现，请立即保存recovery.log和dmesg(如果不会的话可以在终端里分别执行start_dmesg_log.sh和start_recovery_log.sh)，然后开新issue上传这两个附件。
-* ~可以提取boot分区，但是magisk安装报错无法unpack boot，原因未知。~   
+
+* ~可以提取boot分区，但是magisk安装报错无法unpack boot，原因未知。~
+
 解决方案：magisk无法直接打开block设备导致无法读取boot分区。现在加入刷前预处理:复制boot到临时文件→保存原始副本→重定向符号链接，刷完后处理:恢复符号链接→比较文件是否被修改→修改了才写回
+
+* ~安装twrp应用为系统应用时软重启~
+
+解决方案: 去掉安装为系统应用的勾。
 
 ## 如何构建？
 最好科学上网。如果有哪步运行出错了别开issue问我，烦人。问AI就行了   
@@ -77,6 +93,7 @@ python3 device/vivo/k6853v1_64_6360/make_hybrid.py
 
 ## Credits
 * [4accccc](https://github.com/4accccc) 设备提供，debug以及手写部分debug代码。
+* [twrpdtgen](https://github.com/twrpdtgen/twrpdtgen) 设备树生成器，但是生成出来的设备树编译出来的rec啥都干不了。
 * [vivo-4.x-kernel-autopatch](https://github.com/4accccc/vivo-4.x-kernel-autopatch) 修补kernel文件，破除mount限制。
 * [Claude Code](https://github.com/anthropics/claude-code) 提供make_hybrid.py，辅助重写Keymaster.cpp等解密相关的文件。
 * [platform_manifest_twrp_aosp](https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp) Minimal manifest for building TWRP for devices shipped with Android 10+.

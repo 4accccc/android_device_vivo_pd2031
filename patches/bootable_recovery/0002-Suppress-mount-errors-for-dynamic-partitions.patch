@@ -1,0 +1,17 @@
+diff --git a/partition.cpp b/partition.cpp
+index 1234567..abcdefg 100644
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -1737,8 +1737,9 @@ bool TWPartition::Mount(bool Display_Error) {
+ 		}
+ 	} else {
+ #endif
+-		if (!Removable && Display_Error)
+-			gui_msg(Msg(msg::kError, "fail_mount=Failed to mount '{1}' ({2})")(Mount_Point)(strerror(errno)));
++		// Skip error display for dynamic partitions that commonly fail during early boot
++		if (!Removable && Display_Error &&
++			Mount_Point != "/vendor" && Mount_Point != "/system_root" && Mount_Point != "/persist")
++			gui_msg(Msg(msg::kError, "fail_mount=Failed to mount '{1}' ({2})")(Mount_Point)(strerror(errno)));
+ 		else
+ 			LOGINFO("Unable to mount '%s'\n", Mount_Point.c_str());
+ 		LOGINFO("Actual block device: '%s', current file system: '%s'\n", Actual_Block_Device.c_str(), Current_File_System.c_str());

@@ -1,5 +1,4 @@
 on init
-    #create mountpoint for /mnt/vendor/persist partition
     mkdir /mnt/vendor/persist 0771 system system
 
     symlink /mnt/vendor/persist /vendor/persist
@@ -9,21 +8,16 @@ on post-fs
     chown system system /mnt/vendor/persist
     chmod 0771 /mnt/vendor/persist
 
-    # We restorecon /mnt/vendor/persist to set SEPolicy label.
     restorecon /mnt/vendor/persist
 
-    # Create mcRegistry to store failure record
     mkdir /mnt/vendor/persist/mcRegistry 0771 system system
 
     write /proc/bootprof "MOBICORE: Starting mcDriverDaemon"
     start mobicore
 
 on post-fs-data
-    # Create /data/vendor/key_provisioning dir and get proper encryption policy installed
-    # Key Installation
     mkdir /data/vendor/key_provisioning 0771 system system
 
-# just boot in fastboot mode, fastbootd service need vendor.boot-hal-1-0 & health-hal-2-0
 on property:recovery.fastboot_mode=1
     start vendor.boot-hal-1-0
     start health-hal-2-0
@@ -31,7 +25,6 @@ on property:recovery.fastboot_mode=1
 on property:recovery.service=1
     start vendor.keymaster-4-0-trustonic
     start gatekeeper-1-0
-    #wait_for_prop hwservicemanager.ready true
     exec_start wait_for_keymaster
     start guardianangle
 
@@ -94,7 +87,8 @@ service health-hal-2-0 /vendor/bin/hw/android.hardware.health@2.0-service
     group root
     seclabel u:r:recovery:s0
 
-# Start Daemon (Registry directories should already be present)service mobicore /vendor/bin/mcDriverDaemon --P1 /mnt/vendor/persist/mcRegistry 	-r /vendor/app/mcRegistry/020f0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/030b0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/030c0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/030f0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/05070000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/05120000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/06090000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/07150000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/07170000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/08050000000000000000000000003419.drbin 	-r /vendor/app/mcRegistry/09180000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/62d690ff530e46cfb472ec52c4da3773.drbin    disabled    user root    group root    seclabel u:r:recovery:s0
+# Start Daemon (Registry directories should already be present)
+# service mobicore /vendor/bin/mcDriverDaemon --P1 /mnt/vendor/persist/mcRegistry 	-r /vendor/app/mcRegistry/020f0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/030b0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/030c0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/030f0000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/05070000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/05120000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/06090000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/07150000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/07170000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/08050000000000000000000000003419.drbin 	-r /vendor/app/mcRegistry/09180000000000000000000000000000.drbin 	-r /vendor/app/mcRegistry/62d690ff530e46cfb472ec52c4da3773.drbin    disabled    user root    group root    seclabel u:r:recovery:s0
 
 # t-Drv naming
 # 020f0000000000000000000000000000.drbin : utils

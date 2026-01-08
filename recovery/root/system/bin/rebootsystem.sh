@@ -1,3 +1,3 @@
 #!/system/bin/sh
-# 有的时候reboot system没用
+# Force reboot to system for MediaTek devices
 /system/bin/reboot system

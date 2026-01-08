@@ -71,7 +71,7 @@ subsystem sound
 /sys/devices/system/cpu/cpu*   cpufreq/scaling_max_freq   0664  system system
 /sys/devices/system/cpu/cpu*   cpufreq/scaling_min_freq   0664  system system
 
-# Mobicore/Trustonic TEE devices ccccclovemiku added 2026/1/4
+# Mobicore/Trustonic TEE devices ccccclovemiku 2026/1/6
 /dev/mobicore                 0666   system     system
 /dev/mobicore-user            0666   system     system
 /dev/t-base-tui               0660   system     system
