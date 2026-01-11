@@ -1,0 +1,59 @@
+diff --git a/partition.cpp b/partition.cpp
+index 1234567..abcdefg 100644
+--- a/partition.cpp
++++ b/partition.cpp
+@@ -3478,35 +3478,35 @@ bool TWPartition::Flash_Image(PartitionSettings *part_settings) {
+
+ 	LOGINFO("Image filename is: %s\n", Backup_FileName.c_str());
+
+-	if (Backup_Method == BM_FILES) {
+-		LOGERR("Cannot flash images to file systems\n");
+-		return false;
+-	} else if (!Can_Flash_Img) {
++	// Check Can_Flash_Img first
++	if (!Can_Flash_Img) {
+ 		LOGERR("Cannot flash images to partitions %s\n", Display_Name.c_str());
+ 		return false;
+-	} else {
+-		if (!Find_Partition_Size()) {
+-			LOGERR("Unable to find partition size for '%s'\n", Mount_Point.c_str());
+-			return false;
+-		}
+-		unsigned long long image_size = TWFunc::Get_File_Size(full_filename);
+-		if (image_size > Size) {
+-			LOGINFO("Size (%llu bytes) of image '%s' is larger than target device '%s' (%llu bytes)\n",
+-				image_size, Backup_FileName.c_str(), Actual_Block_Device.c_str(), Size);
+-			gui_err("img_size_err=Size of image is larger than target device");
+-			return false;
+-		}
+-		if (Backup_Method == BM_DD) {
+-			if (!part_settings->adbbackup) {
+-				if (Is_Sparse_Image(full_filename)) {
+-					return Flash_Sparse_Image(full_filename);
+-				}
++	}
++
++	if (!Find_Partition_Size()) {
++		LOGERR("Unable to find partition size for '%s'\n", Mount_Point.c_str());
++		return false;
++	}
++	unsigned long long image_size = TWFunc::Get_File_Size(full_filename);
++	if (image_size > Size) {
++		gui_err("img_size_err=Size of image is larger than target device");
++		return false;
++	}
++
++	// For filesystem partitions (BM_FILES) or emmc partitions (BM_DD), use dd/sparse
++	if (Backup_Method == BM_FILES || Backup_Method == BM_DD) {
++		if (!part_settings->adbbackup) {
++			if (Is_Sparse_Image(full_filename)) {
++				return Flash_Sparse_Image(full_filename);
+ 			}
+-			return Raw_Read_Write(part_settings);
+-		} else if (Backup_Method == BM_FLASH_UTILS) {
+-			return Flash_Image_FI(full_filename, NULL);
+ 		}
++		return Raw_Read_Write(part_settings);
++	} else if (Backup_Method == BM_FLASH_UTILS) {
++		return Flash_Image_FI(full_filename, NULL);
+ 	}

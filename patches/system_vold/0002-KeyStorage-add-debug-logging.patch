@@ -1,0 +1,137 @@
+diff --git a/KeyStorage.cpp b/KeyStorage.cpp
+index 51fc4f6..d1f4203 100644
+--- a/KeyStorage.cpp
++++ b/KeyStorage.cpp
+@@ -341,11 +341,14 @@ static KeymasterOperation BeginKeymasterOp(Keymaster& keymaster, const std::stri
+                                            const km::AuthorizationSet& keyParams,
+                                            const km::AuthorizationSet& opParams,
+                                            km::AuthorizationSet* outParams) {
++    printf("[DEBUG] BeginKeymasterOp: ENTER dir=%s\n", dir.c_str());
+     km::AuthorizationSet inParams(keyParams);
+     inParams.append(opParams.begin(), opParams.end());
++    printf("[DEBUG] BeginKeymasterOp: inParams count=%zu\n", inParams.size());
+ 
+     auto blob_file = dir + "/" + kFn_keymaster_key_blob;
+     LOG(INFO) << "reading blob_file: " << blob_file;
++    printf("[DEBUG] BeginKeymasterOp: blob_file=%s\n", blob_file.c_str());
+     std::string blob_dir(kFn_keymaster_key_blob);
+     std::string temp_dir = "/tmp/" + blob_dir + "/";
+     if (TEMP_FAILURE_RETRY(mkdir(temp_dir.c_str(), 0700)) == -1) {
+@@ -365,20 +368,18 @@ static KeymasterOperation BeginKeymasterOp(Keymaster& keymaster, const std::stri
+     // } else {
+         // DeleteUpgradedKey(keymaster, upgraded_blob_file);
+     if (!readFileToString(blob_file, &blob)) return KeymasterOperation();
++    printf("[DEBUG] BeginKeymasterOp: blob read, size=%zu\n", blob.size());
+     // }
+     auto opHandle = keymaster.begin(blob, inParams, outParams);
++    printf("[DEBUG] BeginKeymasterOp: keymaster.begin() returned, valid=%d\n", (bool)opHandle);
+     if (!opHandle) return opHandle;
+ 
+     // If key blob wasn't upgraded, nothing left to do.
+-    // if (!opHandle.getUpgradedBlob()) return opHandle;
++    if (!opHandle.getUpgradedBlob()) return opHandle;
+ 
+-    // if (already_upgraded) {
+-    //     LOG(ERROR) << "Unexpected case; already-upgraded key " << upgraded_blob_file
+-    //                << " still requires upgrade";
+-    //     return KeymasterOperation();
+-    // }
++    // Key was upgraded, save the new blob
+     LOG(INFO) << "Upgrading key: " << blob_file;
+-    
++
+     if (!writeStringToFile(*opHandle.getUpgradedBlob(), upgraded_blob_file))
+         return KeymasterOperation();
+     // if (cp_needsCheckpoint()) {
+@@ -421,15 +422,30 @@ static bool encryptWithKeymasterKey(Keymaster& keymaster, const std::string& dir
+ static bool decryptWithKeymasterKey(Keymaster& keymaster, const std::string& dir,
+                                     const km::AuthorizationSet& keyParams,
+                                     const std::string& ciphertext, KeyBuffer* message) {
++    printf("[DEBUG] decryptWithKeymasterKey: ENTER ciphertext size=%zu\n", ciphertext.size());
+     const std::string nonce = ciphertext.substr(0, GCM_NONCE_BYTES);
+     auto bodyAndMac = ciphertext.substr(GCM_NONCE_BYTES);
++    printf("[DEBUG] decryptWithKeymasterKey: nonce size=%zu, bodyAndMac size=%zu\n", nonce.size(), bodyAndMac.size());
+     auto opParams = km::AuthorizationSetBuilder()
+                             .Authorization(km::TAG_NONCE, nonce)
+                             .Authorization(km::TAG_PURPOSE, km::KeyPurpose::DECRYPT);
++    printf("[DEBUG] decryptWithKeymasterKey: calling BeginKeymasterOp\n");
+     auto opHandle = BeginKeymasterOp(keymaster, dir, keyParams, opParams, nullptr);
+-    if (!opHandle) return false;
+-    if (!opHandle.updateCompletely(bodyAndMac, message)) return false;
+-    if (!opHandle.finish(nullptr)) return false;
++    if (!opHandle) {
++        printf("[DEBUG] decryptWithKeymasterKey: BeginKeymasterOp FAILED\n");
++        return false;
++    }
++    printf("[DEBUG] decryptWithKeymasterKey: BeginKeymasterOp SUCCESS, calling updateCompletely\n");
++    if (!opHandle.updateCompletely(bodyAndMac, message)) {
++        printf("[DEBUG] decryptWithKeymasterKey: updateCompletely FAILED\n");
++        return false;
++    }
++    printf("[DEBUG] decryptWithKeymasterKey: updateCompletely SUCCESS, calling finish\n");
++    if (!opHandle.finish(nullptr)) {
++        printf("[DEBUG] decryptWithKeymasterKey: finish FAILED\n");
++        return false;
++    }
++    printf("[DEBUG] decryptWithKeymasterKey: SUCCESS\n");
+     return true;
+ }
+ 
+@@ -571,7 +587,9 @@ bool storeKey(const std::string& dir, const KeyAuthentication& auth, const KeyBu
+     std::string appId = generateAppId(auth, secdiscardable_hash);
+     std::string encryptedKey;
+     if (auth.usesKeymaster()) {
++        printf("[DEBUG] retrieveKey: creating Keymaster...\n");
+         Keymaster keymaster;
++        printf("[DEBUG] retrieveKey: Keymaster created, valid=%d\n", (bool)keymaster);
+         if (!keymaster) return false;
+         std::string kmKey;
+         if (!generateKeyStorageKey(keymaster, appId, &kmKey)) return false;
+@@ -609,23 +627,43 @@ bool storeKeyAtomically(const std::string& key_path, const std::string& tmp_path
+ 
+ bool retrieveKey(const std::string& dir, const KeyAuthentication& auth, KeyBuffer* key) {
+     LOG(INFO) << "Retrieving key from keymaster";
++    printf("[DEBUG] retrieveKey: dir=%s\n", dir.c_str());
+     std::string version;
+-    if (!readFileToString(dir + "/" + kFn_version, &version)) return false;
++    if (!readFileToString(dir + "/" + kFn_version, &version)) {
++        printf("[DEBUG] retrieveKey: failed to read version file\n");
++        return false;
++    }
++    printf("[DEBUG] retrieveKey: version=%s\n", version.c_str());
+     if (version != kCurrentVersion) {
+         LOG(ERROR) << "Version mismatch, expected " << kCurrentVersion << " got " << version;
+         return false;
+     }
+     std::string secdiscardable_hash;
+-    if (!readSecdiscardable(dir + "/" + kFn_secdiscardable, &secdiscardable_hash)) return false;
++    if (!readSecdiscardable(dir + "/" + kFn_secdiscardable, &secdiscardable_hash)) {
++        printf("[DEBUG] retrieveKey: failed to read secdiscardable\n");
++        return false;
++    }
++    printf("[DEBUG] retrieveKey: secdiscardable_hash size=%zu\n", secdiscardable_hash.size());
+     std::string appId = generateAppId(auth, secdiscardable_hash);
++    printf("[DEBUG] retrieveKey: appId size=%zu\n", appId.size());
+     std::string encryptedMessage;
+-    if (!readFileToString(dir + "/" + kFn_encrypted_key, &encryptedMessage)) return false;
++    if (!readFileToString(dir + "/" + kFn_encrypted_key, &encryptedMessage)) {
++        printf("[DEBUG] retrieveKey: failed to read encrypted_key\n");
++        return false;
++    }
++    printf("[DEBUG] retrieveKey: encryptedMessage size=%zu\n", encryptedMessage.size());
+     if (auth.usesKeymaster()) {
++        printf("[DEBUG] retrieveKey: creating Keymaster...\n");
+         Keymaster keymaster;
++        printf("[DEBUG] retrieveKey: Keymaster created, valid=%d\n", (bool)keymaster);
+         if (!keymaster) return false;
+         km::AuthorizationSet keyParams = beginParams(appId);
+-        if (!decryptWithKeymasterKey(keymaster, dir, keyParams, encryptedMessage, key))
++        printf("[DEBUG] retrieveKey: calling decryptWithKeymasterKey\n");
++        if (!decryptWithKeymasterKey(keymaster, dir, keyParams, encryptedMessage, key)) {
++            printf("[DEBUG] retrieveKey: decryptWithKeymasterKey FAILED\n");
+             return false;
++        }
++        printf("[DEBUG] retrieveKey: decryptWithKeymasterKey SUCCESS\n");
+     } else {
+         if (!decryptWithoutKeymaster(appId, encryptedMessage, key)) return false;
+     }

@@ -1,0 +1,27 @@
+# Mobicore/Trustonic TEE file contexts for TWRP
+
+# Device nodes
+/dev/mobicore                   u:object_r:mobicore_admin_device:s0
+/dev/mobicore-user              u:object_r:mobicore_user_device:s0
+/dev/t-base-tui                 u:object_r:mobicore_tui_device:s0
+/dev/tee0                       u:object_r:teei_client_device:s0
+/dev/teei_client                u:object_r:teei_client_device:s0
+/dev/rpmb0                      u:object_r:teei_rpmb_device:s0
+/dev/emmcrpmb0                  u:object_r:teei_rpmb_device:s0
+/dev/teei_config                u:object_r:teei_config_device:s0
+/dev/teei_fp                    u:object_r:teei_fp_device:s0
+/dev/tz_vfs                     u:object_r:teei_vfs_device:s0
+/dev/ut_keymaster               u:object_r:ut_keymaster_device:s0
+/dev/block/mmcblk0rpmb          u:object_r:rpmb_block_device:s0
+/dev/block/platform/bootdevice/by-name/sdrpmb    u:object_r:tkcore_block_device:s0
+
+# Data directories
+/data/vendor/mcRegistry(/.*)?   u:object_r:mobicore_data_file:s0
+/data/vendor/thh(/.*)?          u:object_r:teei_data_file:s0
+
+# Vendor files
+/vendor/app/mcRegistry(/.*)?    u:object_r:mobicore_vendor_file:s0
+
+# Persist partition
+/mnt/vendor/persist(/.*)?       u:object_r:persist_data_file:s0
+/mnt/vendor/persist/mcRegistry(/.*)? u:object_r:mobicore_data_file:s0

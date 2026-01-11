@@ -1,0 +1,192 @@
+    # Fuck vivo!
+    # DO NOT EDIT UNLESS YOU KNOW WHAT YOU'RE DOING
+    # 保留所有注释，修改前请明白你自己在干什么!
+on early-init
+    # 设置产品型号 - 触控固件加载需要
+    setprop ro.vivo.product.model PD2031
+    setprop ro.product.model PD2031
+    setprop ro.product.board k6853v1_64_6360
+    
+    # FBE 加密属性 (从原厂 prop.default 提取)
+    setprop ro.crypto.volume.filenames_mode aes-256-cts
+
+    # SDK 版本必须匹配原厂 Android 10 (SDK 29)
+    # setprop 无法覆盖已设置的 ro. 属性，使用 resetprop
+    setprop ro.vndk.version 29
+    
+    # persist 目录
+    mkdir /mnt/vendor/persist 0771 system system
+    mkdir /persist 0771 system system
+    mkdir /protect_f 0771 system system
+    mkdir /protect_s 0771 system system
+    mkdir /nvdata 0771 system system
+    mkdir /nvcfg 0771 system system
+    symlink /mnt/vendor/persist /vendor/persist
+
+on init
+    # 使用 configfs USB 模式
+    setprop sys.usb.configfs 1
+    setprop sys.usb.ffs.aio_compat 1
+
+    # gatekeeper symlink
+    symlink /vendor/lib64/hw/libMcGatekeeper.so /vendor/lib64/hw/gatekeeper.k6853v1_64_6360.so
+
+on post-fs
+    # 使用 resetprop 强制修改 SDK 版本为 Android 10 (29) - 必须在解密前执行
+    exec u:r:recovery:s0 root root -- /system/bin/resetprop ro.build.version.sdk 29
+    exec u:r:recovery:s0 root root -- /system/bin/resetprop ro.system.build.version.sdk 29
+    exec u:r:recovery:s0 root root -- /system/bin/resetprop ro.vendor.build.version.sdk 29
+    exec u:r:recovery:s0 root root -- /system/bin/resetprop ro.product.build.version.sdk 29
+    exec u:r:recovery:s0 root root -- /system/bin/resetprop ro.odm.build.version.sdk 29
+    exec u:r:recovery:s0 root root -- /system/bin/resetprop ro.system_ext.build.version.sdk 29
+
+    # 自动检测并设置安全补丁级别 - 必须在 keymaster 启动前执行
+    # 从系统分区读取真实的 security patch level，解决 FBE 解密因日期不匹配失败的问题
+    # 注意: PRODUCT_COPY_FILES 不保留执行权限，需要先 chmod
+    chmod 0755 /system/bin/auto_patchlevel.sh
+    exec u:r:recovery:s0 root root -- /system/bin/auto_patchlevel.sh
+
+    # 清除 BCB 防止重启循环
+    chmod 0755 /system/bin/clear_bcb.sh
+    exec u:r:recovery:s0 root root -- /system/bin/clear_bcb.sh
+
+    # Support A/B feature for EMMC and UFS boot region
+    symlink /dev/block/sda /dev/block/mmcblk0boot0
+    symlink /dev/block/sdb /dev/block/mmcblk0boot1
+    symlink /dev/block/mmcblk0boot0 /dev/block/platform/bootdevice/by-name/preloader_a
+    symlink /dev/block/mmcblk0boot1 /dev/block/platform/bootdevice/by-name/preloader_b
+    symlink /dev/block/platform/bootdevice/by-name/preloader_a /dev/block/platform/bootdevice/by-name/preloader_emmc_a
+    symlink /dev/block/platform/bootdevice/by-name/preloader_b /dev/block/platform/bootdevice/by-name/preloader_emmc_b
+    symlink /dev/block/platform/bootdevice/by-name/preloader_a /dev/block/platform/bootdevice/by-name/preloader_ufs_a
+    symlink /dev/block/platform/bootdevice/by-name/preloader_b /dev/block/platform/bootdevice/by-name/preloader_ufs_b
+    symlink /dev/block/platform/bootdevice/by-name/preloader_a /dev/block/by-name/preloader_emmc_a
+    symlink /dev/block/platform/bootdevice/by-name/preloader_b /dev/block/by-name/preloader_emmc_b
+    symlink /dev/block/platform/bootdevice/by-name/preloader_a /dev/block/by-name/preloader_ufs_a
+    symlink /dev/block/platform/bootdevice/by-name/preloader_b /dev/block/by-name/preloader_ufs_b
+
+    # 挂载 persist 分区 - 必须在 mobicore 启动前挂载
+    wait /dev/block/by-name/persist
+    mount ext4 /dev/block/by-name/persist /mnt/vendor/persist noatime
+    
+    # persist 分区权限
+    chown system system /mnt/vendor/persist
+    chmod 0771 /mnt/vendor/persist
+    restorecon /mnt/vendor/persist
+    mkdir /mnt/vendor/persist/mcRegistry 0771 system system
+
+    # TEE/RPMB 设备权限 - ueventd 规则可能不生效，手动设置
+    chmod 0666 /dev/mobicore
+    chmod 0666 /dev/mobicore-user
+    chmod 0660 /dev/t-base-tui
+    chmod 0660 /dev/rpmb0
+    chown system system /dev/mobicore
+    chown system system /dev/mobicore-user
+    chown system system /dev/t-base-tui
+    chown system system /dev/rpmb0
+
+    # 启动 mobicore
+    start mobicore
+
+on post-fs-data
+    mkdir /data/vendor/key_provisioning 0771 system system
+
+on boot
+    # 执行触控固件更新
+    exec u:r:recovery:s0 root root -- /system/bin/vts_app_recovery --update
+    
+    # 启动加密解密相关服务
+    setprop recovery.service 1
+
+# 防止 USB 被永久禁用 (只在 persist 属性上)
+on property:persist.sys.usb.config=none
+    setprop persist.sys.usb.config adb
+
+# 注释掉这个，因为它会阻止MTP切换
+# on property:sys.usb.config=none
+#     setprop sys.usb.config adb
+
+# MTP FunctionFS 设置 (在 boot 阶段，此时 configfs 已就绪)
+on boot
+    mkdir /config/usb_gadget/g1/functions/ffs.mtp 0770 shell shell
+    mkdir /dev/usb-ffs/mtp 0770 shell shell
+    mount functionfs mtp /dev/usb-ffs/mtp rmode=0770,fmode=0660,uid=2000,gid=2000
+
+# MTP 模式配置 (configfs)
+on property:sys.usb.config=mtp && property:sys.usb.configfs=1 && property:sys.usb.ffs.mtp.ready=1
+    write /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration "mtp"
+    write /config/usb_gadget/g1/idProduct 0x4ee1
+    symlink /config/usb_gadget/g1/functions/ffs.mtp /config/usb_gadget/g1/configs/b.1/f1
+    write /config/usb_gadget/g1/UDC ${sys.usb.controller}
+    setprop sys.usb.state ${sys.usb.config}
+
+# MTP + ADB 模式配置 (configfs)
+on property:sys.usb.config=mtp,adb && property:sys.usb.configfs=1 && property:sys.usb.ffs.mtp.ready=1 && property:sys.usb.ffs.ready=1
+    write /config/usb_gadget/g1/configs/b.1/strings/0x409/configuration "mtp_adb"
+    write /config/usb_gadget/g1/idProduct 0x4ee2
+    symlink /config/usb_gadget/g1/functions/ffs.mtp /config/usb_gadget/g1/configs/b.1/f1
+    symlink /config/usb_gadget/g1/functions/ffs.adb /config/usb_gadget/g1/configs/b.1/f2
+    write /config/usb_gadget/g1/UDC ${sys.usb.controller}
+    setprop sys.usb.state ${sys.usb.config}
+
+# 拦截 reboot recovery 命令
+on property:sys.powerctl=reboot,recovery
+    chmod 0755 /system/bin/rebootrecovery.sh
+    exec u:r:recovery:s0 root root -- /system/bin/rebootrecovery.sh
+
+# 禁用 keystore2
+on late-init
+    stop keystore2
+
+# 加密服务触发 - 启动所有需要的服务
+on property:recovery.service=1
+    stop keystore2
+    # Start keymaster and gatekeeper (HIDL services)
+    start vendor.keymaster-4-0-trustonic
+    start gatekeeper-1-0
+    exec_start wait_for_keymaster
+    # Start old keystore service for Android 10 password decryption
+    start keystore
+    start guardianangle
+
+# Mobicore TEE Daemon - 之前测试通过的配置
+service mobicore /vendor/bin/mcDriverDaemon --P1 /mnt/vendor/persist/mcRegistry     -r /vendor/app/mcRegistry/06090000000000000000000000000000.drbin     -r /vendor/app/mcRegistry/020f0000000000000000000000000000.drbin     -r /vendor/app/mcRegistry/05120000000000000000000000000000.drbin     -r /vendor/app/mcRegistry/05070000000000000000000000000000.drbin     -r /vendor/app/mcRegistry/030b0000000000000000000000000000.drbin     -r /vendor/app/mcRegistry/030c0000000000000000000000000000.drbin
+    disabled
+    seclabel u:r:recovery:s0
+
+
+service vendor.keymaster-4-0-trustonic /vendor/bin/hw/android.hardware.keymaster@4.0-service.trustonic
+    disabled
+    user root
+    group root drmrpc
+    seclabel u:r:recovery:s0
+
+service gatekeeper-1-0 /vendor/bin/android.hardware.gatekeeper@1.0-service
+    disabled
+    user root
+    group root
+    seclabel u:r:recovery:s0
+
+service wait_for_keymaster /system/bin/wait_for_keymaster
+    disabled
+    user root
+    seclabel u:r:recovery:s0
+
+
+service guardianangle /system/bin/guardianangle
+    disabled
+    user root
+    seclabel u:r:recovery:s0
+
+
+# 旧版 keystore 服务 (原厂使用)
+service keystore_auth /system/bin/keystore_auth
+    disabled
+    user system
+    group root system
+    seclabel u:r:recovery:s0
+
+service keystore /system/bin/keystore /data/misc/keystore
+    disabled
+    user root
+    group root drmrpc readproc
+    seclabel u:r:recovery:s0

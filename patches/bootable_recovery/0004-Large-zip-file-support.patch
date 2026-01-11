@@ -1,0 +1,56 @@
+diff --git a/twrpinstall/twinstall.cpp b/twrpinstall/twinstall.cpp
+index 1234567..abcdefg 100644
+--- a/twrpinstall/twinstall.cpp
++++ b/twrpinstall/twinstall.cpp
+@@ -430,10 +430,20 @@ int TWinstall_zip(const char* path, int* wipe_cache, bool check_for_digest)
+ #ifndef TW_OEM_BUILD
+   DataManager::GetValue(TW_SIGNED_ZIP_VERIFY_VAR, zip_verify);
+ #endif
+
+   DataManager::SetProgress(0);
+
+-	auto package = Package::CreateMemoryPackage(path);
++	// Check file size, use FilePackage for large files to avoid OOM
++	// OTA packages can be several GB, cannot fully mmap into memory
++	std::unique_ptr<Package> package;
++	struct stat st;
++	if (stat(path, &st) == 0 && st.st_size > 1536 * 1024 * 1024LL) {  // > 1.5GB
++		LOGINFO("Large file detected (%lld MB), using FilePackage\n", (long long)st.st_size / (1024 * 1024));
++		package = Package::CreateFilePackage(path, std::bind(&DataManager::SetProgress, std::placeholders::_1));
++	} else {
++		package = Package::CreateMemoryPackage(path);
++	}
+ 	if (!package) {
+ 		return INSTALL_CORRUPT;
+ 	}
+
+ 	if (zip_verify) {
+
+diff --git a/twrpinstall/package.cpp b/twrpinstall/package.cpp
+index 2345678..bcdefgh 100644
+--- a/twrpinstall/package.cpp
++++ b/twrpinstall/package.cpp
+@@ -114,6 +114,12 @@ std::unique_ptr<Package> Package::CreateFilePackage(
+     return nullptr;
+   }
+
++  // Reset file pointer to beginning, otherwise OpenArchiveFd reads from end
++  if (lseek64(fd.get(), 0, SEEK_SET) == -1) {
++    PLOG(ERROR) << "Failed to seek to beginning";
++    return nullptr;
++  }
++
+   return std::make_unique<FilePackage>(std::move(fd), file_size, path, set_progress);
+ }
+
+@@ -246,7 +252,8 @@ ZipArchiveHandle FilePackage::GetZipArchiveHandle() {
+   if (zip_handle_) {
+     return zip_handle_;
+   }
+
+-  if (auto err = OpenArchiveFd(fd_.get(), path_.c_str(), &zip_handle_); err != 0) {
++  // Pass false to not take fd ownership, let unique_fd manage lifetime
++  if (auto err = OpenArchiveFd(fd_.get(), path_.c_str(), &zip_handle_, false); err != 0) {
+     LOG(ERROR) << "Can't open package" << path_ << " : " << ErrorCodeString(err);
+     return nullptr;
+   }

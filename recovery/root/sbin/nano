@@ -1,0 +1,27 @@
+#!/system/bin/sh
+#
+# stub to run inline built nano (/system/bin/nano) with some useful arguments
+# DarthJabba9, 20240904
+#
+
+# the nano binary
+N=/system/bin/nano;
+
+if [ ! -x $N ]; then
+   echo "I cannot find \"$N\". Quitting.";
+   exit 2;
+fi
+
+# default arguments
+ARGS="-A -l -u -y -w";
+
+#  are we calling from an adb shell?
+if [ -n "$ANDROID_SOCKET_adbd" ]; then
+   ARGS=$ARGS" -c";
+#  or from a terminal inside the recovery?
+elif [ -n "$ANDROID_SOCKET_recovery" ]; then
+   export TERM=pcansi;
+fi
+
+[ -x $N ] && $N $ARGS "$@";
+#

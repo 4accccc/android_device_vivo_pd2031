@@ -1,0 +1,21 @@
+diff --git a/twrpinstall/adb_install.cpp b/twrpinstall/adb_install.cpp
+index 1234567..abcdefg 100644
+--- a/twrpinstall/adb_install.cpp
++++ b/twrpinstall/adb_install.cpp
+@@ -35,6 +35,7 @@
+ #include <map>
+ #include <utility>
+ #include <vector>
++#include <chrono>
+ 
+ #include <android-base/file.h>
+ #include <android-base/logging.h>
+@@ -67,7 +68,7 @@ pid_t GetMiniAdbdPid() {
+ 
+ static bool SetUsbConfig(const std::string& state) {
+   android::base::SetProperty("sys.usb.config", state);
+-  return android::base::WaitForProperty("sys.usb.state", state);
++  return android::base::WaitForProperty("sys.usb.state", state, std::chrono::seconds(5));
+ }
+ 
+ // Parses the minadbd command in |message|; returns MinadbdCommand::kError upon errors.

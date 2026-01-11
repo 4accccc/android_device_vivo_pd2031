@@ -1,0 +1,95 @@
+#!/system/bin/sh
+
+# ---------------------------
+# Set date + time, and fix epoch issues in OrangeFox recovery
+# Useful in OrangeFox recovery when the device's RTC is misbehaving
+#
+# By DarthJabba9, Ctapchuk
+#
+# Usage: setdate "2025-01-18-16:31"
+#
+# date format: date +%Y%m%d%H%M -s 202501271715
+# Copyright (C) 2018-2025 The OrangeFox Recovery Project
+# 16 March 2025
+# -------------------------
+
+gnudate=0; # do we have a stand-alone gnu coreutils 'date' utility?
+bb=$(which busybox)
+if [ -f /sbin/gnudate ]; then
+	date_cmd="/sbin/gnudate";
+	gnudate=1;
+elif [ -n "$bb" ]; then
+	date_cmd="$bb date";
+else
+	date_cmd="date";
+fi
+
+# copy the ROM version to fox_home
+fox_home=$(getprop "ro.orangefox.home")
+[ ! -n $fox_home ] && fox_home=/sdcard/Fox
+if [ ! -f $fox_home/fox_fix_date ]; then
+   mkdir -p $fox_home;
+   cp -a /FFiles/fox_fix_date $fox_home;
+   chmod 0755 $fox_home/fox_fix_date;
+fi
+
+# process the arguments
+if [ -z "$1" -o "$1" = "-h" -o "$1" = "--help" ]; then
+   echo "Usage =  $0 YYYY-mm-dd-HH:MM";
+   echo "Example: $0 2021-08-27-16:31";
+   exit 0;
+fi
+
+# check/save the time drift values
+save_drift() {
+	[ ! -d /persist ] && return;
+
+	local M=$(cat /proc/mounts | grep "/persist");
+	[ -z "$M" ] && mount /persist > /dev/null 2>&1;
+
+	local epoch_cfg=/persist/.fox_epoch_drift.cfg;
+	local now=$($date_cmd +%s);
+	local epoch=$(cat /sys/class/rtc/rtc0/since_epoch);
+	local drift=$(expr $now - $epoch);
+
+	# allow 5 minutes drift
+	if [ $drift -gt 600 ]; then
+	    echo -n "$drift" > $epoch_cfg;
+	fi
+
+	[ -z "$M" ] && umount /persist > /dev/null 2>&1;
+	echo "Drift ($now minus $epoch)=$drift";
+}
+
+# configure
+DateStr="+%Y%m%d%H%M";
+Value="$1";
+Value=$(echo "$1" | tr -d "-");  # remove "-"
+Value=$(echo "$Value" | tr -d ":"); # remove ":"
+Value=$(echo "$Value" | tr -d " "); # remove space
+
+# change the date
+set_arg="";
+if [ "$gnudate" = 1 ]; then
+	Value=$(echo "$1" | sed -r 's/(.*)-/\1 /'); # remove the last "-"
+	DateStr="-s $Value";
+	echo "- Running command: $date_cmd $DateStr";
+	$date_cmd "$DateStr";
+elif [ -n "$bb" ]; then
+	DateStr=$DateStr" -s";
+else
+	set_arg="set"
+fi
+
+if [ "$gnudate" != 1 ]; then
+	CMD="$date_cmd $DateStr $Value $set_arg";
+	echo "- Running command: $CMD";
+	$CMD;
+fi
+
+# save it
+save_drift;
+
+# return
+exit 0;
+#
