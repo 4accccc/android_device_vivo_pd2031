@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-创建带 Vivo AVB footer 的混合 recovery 镜像
-完全自适应 - 自动检测所有偏移量
+创建带 Vivo AVB footer 的混合 recovery 镜像, 自动检测偏移量
+
 """
 import sys
 import os
@@ -40,7 +40,7 @@ def create_avb_footer(vbmeta_offset, vbmeta_size, template_footer):
 
 def main():
     if len(sys.argv) < 2:
-        twrp_img = os.path.expanduser("~/twrp/out/target/product/k6853v1_64_6360/recovery.img")
+        twrp_img = os.path.expanduser("~/fox_12.1/out/target/product/k6853v1_64_6360/OrangeFox-R11.3-Unofficial-k6853v1.img")
     else:
         twrp_img = sys.argv[1]
 
